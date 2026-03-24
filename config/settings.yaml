@@ -1,0 +1,20 @@
+# Spatial reference
+crs: "EPSG:3035"
+resolution_m: 100
+resampling_method: "bilinear"  # bilinear | nearest | cubic
+
+# Data paths (relative to project root)
+data_dir: "data/"
+output_dir: "outputs/"
+wdpa_local_path: null  # set to local file path if API unavailable
+
+# WDPA API
+wdpa_api_base: "https://api.protectedplanet.net/v3"
+wdpa_api_token: null  # set via environment variable WDPA_API_TOKEN
+
+# Logging
+log_level: "INFO"  # DEBUG | INFO | WARNING | ERROR
+
+# Interface
+default_tab: 0
+map_tiles: "OpenStreetMap"

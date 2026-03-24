@@ -1,0 +1,44 @@
+# WDPA IUCN_CAT and DESIG fields → 5 display classes
+# colour: hex for map display
+# priority: lower = more protective (used for deduplication ranking)
+
+classes:
+  strict_core:
+    label: "Strict protection — core zones"
+    colour: "#0F6E56"
+    priority: 1
+    iucn_cats: ["Ia", "Ib", "II"]
+    desig_keywords: ["National Park", "Strict Nature Reserve",
+                     "Wilderness Area", "Réserve Naturelle Nationale",
+                     "Réserve Naturelle Régionale"]
+
+  regulatory:
+    label: "Regulatory protection"
+    colour: "#1D9E75"
+    priority: 2
+    iucn_cats: ["III", "IV"]
+    desig_keywords: ["Natural Monument", "Habitat Management Area",
+                     "Arrêté de Protection", "Réserve Biologique"]
+
+  contractual:
+    label: "Contractual management / Natura 2000"
+    colour: "#9FE1CB"
+    priority: 3
+    iucn_cats: ["V", "VI"]
+    desig_keywords: ["Special Area of Conservation", "SAC",
+                     "Special Protection Area", "SPA",
+                     "Zone Spéciale de Conservation",
+                     "Zone de Protection Spéciale",
+                     "Protected Landscape", "Managed Resource"]
+
+  unassigned:
+    label: "Unassigned status"
+    colour: "#B4B2A9"
+    priority: 4
+    iucn_cats: ["Not Reported", "Not Applicable", "Not Assigned", ""]
+
+  oecm:
+    label: "Recorded OECMs"
+    colour: "#378ADD"
+    priority: 2
+    source: "WD-OECM"

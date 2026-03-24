@@ -1,0 +1,42 @@
+# Inter-group weights (must sum to 1.0)
+inter_group_weights:
+  W_A: 0.50   # Ecological integrity
+  W_B: 0.15   # Co-benefits / social compatibility
+  W_C: 0.35   # Production and use function
+
+# Intra-group weights (each group must sum to 1.0)
+group_a_weights:
+  ecosystem_condition: 0.45
+  regulating_es:       0.35
+  low_pressure:        0.20
+
+group_b_weights:
+  cultural_es: 1.00   # Single criterion in v0.1
+
+group_c_weights:
+  provisioning_es:     0.60
+  compatible_landuse:  0.40
+
+# Aggregation method
+aggregation:
+  default_method: "geometric"   # geometric | owa
+  default_alpha:  0.25          # orness parameter for OWA
+
+# Group D eliminatory thresholds
+eliminatory:
+  max_anthropogenic_pressure: 150.0   # inhabitants/km² (adjust per territory)
+  gap_bonus_max: 0.20
+
+# Group C use presence threshold
+use_presence:
+  min_group_c_score: 0.10   # below this → flag as classical_pa_preferable
+
+# Representativity target thresholds (KMGBF)
+representativity:
+  default_target: 0.30   # 30% per ecosystem type (KMGBF Target 3)
+
+# Criterion-to-ecosystem mapping for weight proposals from Module 1
+criterion_ecosystem_mapping:
+  ecosystem_condition:  "all"       # proxy for overall condition
+  regulating_es:        "wetlands"  # strongest representativity gap typical
+  low_pressure:         "all"

@@ -1,0 +1,95 @@
+# CLC level 1 and level 2 classes → compatibility status and ordinal score
+# status: eliminatory | compatible | neutral
+# score: [0.0–1.0] ordinal score for compatible classes (used in Group C)
+#        null for eliminatory classes
+
+clc_compatibility:
+  # Level 1: Artificial surfaces
+  "1":
+    status: eliminatory
+    score: null
+    label: "Artificial surfaces"
+
+  "1.1":
+    status: eliminatory
+    score: null
+    label: "Urban fabric"
+
+  "1.2":
+    status: eliminatory
+    score: null
+    label: "Industrial / commercial units"
+
+  "1.3":
+    status: eliminatory
+    score: null
+    label: "Mine, dump, construction sites"
+
+  "1.4":
+    status: neutral
+    score: 0.1
+    label: "Artificial non-agricultural vegetated areas"
+
+  # Level 2: Agricultural areas
+  "2.1":
+    status: eliminatory
+    score: null
+    label: "Arable land (intensive)"
+
+  "2.2":
+    status: compatible
+    score: 0.5
+    label: "Permanent crops"
+
+  "2.3":
+    status: compatible
+    score: 0.75
+    label: "Pastures"
+
+  "2.4":
+    status: compatible
+    score: 0.65
+    label: "Heterogeneous agricultural areas (HVN)"
+
+  # Level 3: Forest and semi-natural
+  "3.1":
+    status: compatible
+    score: 0.85
+    label: "Forests"
+
+  "3.2":
+    status: compatible
+    score: 0.80
+    label: "Scrub and herbaceous vegetation"
+
+  "3.3":
+    status: neutral
+    score: 0.30
+    label: "Open spaces with little vegetation"
+
+  # Level 4: Wetlands
+  "4.1":
+    status: compatible
+    score: 0.90
+    label: "Inland wetlands"
+
+  "4.2":
+    status: compatible
+    score: 0.85
+    label: "Coastal wetlands"
+
+  # Level 5: Water bodies
+  "5.1":
+    status: compatible
+    score: 0.70
+    label: "Inland waters"
+
+  "5.2":
+    status: compatible
+    score: 0.65
+    label: "Marine waters"
+
+# Note: these values are indicative defaults.
+# Adapt to the specific territory before any operational use.
+# Class 2.1 may be compatible in some low-intensity contexts
+# — verify against regional land management data.
