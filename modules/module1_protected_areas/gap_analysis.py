@@ -41,7 +41,7 @@ def strict_gaps(
 
     Notes
     -----
-    Strict gaps = territory \ (union of all PA polygons)
+    Strict gaps = territory minus (union of all PA polygons)
 
     These areas are priority candidates for new PA or OECM designation.
 
@@ -116,7 +116,7 @@ def qualitative_gaps(
     Notes
     -----
     Qualitative gaps = areas covered ONLY by weak classes
-                     = territory \ (union of strong PA classes)
+                     = territory minus (union of strong PA classes)
 
     These areas may benefit from OECM designation to complement existing
     weak protection.
