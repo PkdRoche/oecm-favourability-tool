@@ -1,6 +1,7 @@
 """OECM Favourability Tool — Streamlit entry point."""
 import streamlit as st
 import logging
+import tempfile
 
 # Configure logging
 logging.basicConfig(
@@ -79,18 +80,216 @@ with tab1:
     )
 
 with tab2:
+    # Data upload section
+    st.subheader("Input Data Upload")
+
+    st.markdown(
+        """
+        Upload all 6 required raster layers (GeoTIFF format). All layers must have the same CRS and resolution.
+        """
+    )
+
+    col_upload1, col_upload2 = st.columns(2)
+
+    with col_upload1:
+        st.markdown("**Group A — Ecological Integrity:**")
+        ecosystem_condition_file = st.file_uploader(
+            "Ecosystem condition [0-1]",
+            type=['tif', 'tiff'],
+            key='eco_condition'
+        )
+        regulating_es_file = st.file_uploader(
+            "Regulating ES capacity [0-1]",
+            type=['tif', 'tiff'],
+            key='reg_es'
+        )
+        pressure_file = st.file_uploader(
+            "Anthropogenic pressure (hab/km²)",
+            type=['tif', 'tiff'],
+            key='pressure'
+        )
+
+    with col_upload2:
+        st.markdown("**Group B — Co-benefits:**")
+        cultural_es_file = st.file_uploader(
+            "Cultural ES capacity [0-1]",
+            type=['tif', 'tiff'],
+            key='cult_es'
+        )
+
+        st.markdown("**Group C — Production Function:**")
+        provisioning_es_file = st.file_uploader(
+            "Provisioning ES capacity [0-1]",
+            type=['tif', 'tiff'],
+            key='prov_es'
+        )
+        landuse_file = st.file_uploader(
+            "Land use / land cover (categorical)",
+            type=['tif', 'tiff'],
+            key='landuse'
+        )
+
+    # Check if all files are uploaded
+    all_files_uploaded = all([
+        ecosystem_condition_file,
+        regulating_es_file,
+        pressure_file,
+        cultural_es_file,
+        provisioning_es_file,
+        landuse_file
+    ])
+
+    # Check if weights sum to 1.0
+    weight_sum = parameters.get('W_A', 0) + parameters.get('W_B', 0) + parameters.get('W_C', 0)
+    weights_valid = abs(weight_sum - 1.0) < 0.001
+
+    st.markdown("---")
+
+    # Run analysis button
+    run_col1, run_col2, run_col3 = st.columns([1, 2, 1])
+
+    with run_col2:
+        run_button_disabled = not (all_files_uploaded and weights_valid)
+
+        if not all_files_uploaded:
+            st.warning("Upload all 6 raster layers to enable analysis.")
+        elif not weights_valid:
+            st.error(f"Inter-group weights must sum to 1.0 (current sum: {weight_sum:.3f})")
+
+        run_button = st.button(
+            "Run MCE Analysis",
+            type="primary",
+            disabled=run_button_disabled,
+            use_container_width=True
+        )
+
+    if run_button:
+        with st.spinner("Loading and preprocessing raster layers..."):
+            try:
+                # Import required modules
+                from modules.module2_favourability import raster_preprocessing
+                from modules.module2_favourability import mce_engine
+                import rasterio
+
+                # Load rasters
+                @st.cache_data
+                def load_uploaded_raster(uploaded_file):
+                    """Load raster from uploaded file."""
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
+                        tmp.write(uploaded_file.read())
+                        tmp.flush()
+                        return raster_preprocessing.load_raster(tmp.name)
+
+                # Load all layers
+                eco_array, eco_profile = load_uploaded_raster(ecosystem_condition_file)
+                reg_array, reg_profile = load_uploaded_raster(regulating_es_file)
+                pressure_array, pressure_profile = load_uploaded_raster(pressure_file)
+                cult_array, cult_profile = load_uploaded_raster(cultural_es_file)
+                prov_array, prov_profile = load_uploaded_raster(provisioning_es_file)
+                landuse_array, landuse_profile = load_uploaded_raster(landuse_file)
+
+                st.success("All layers loaded successfully!")
+
+            except Exception as e:
+                st.error(f"Raster loading failed: {str(e)}")
+                logger.exception("Raster loading error:")
+                st.stop()
+
+        with st.spinner("Aligning rasters to common grid..."):
+            try:
+                # Align all rasters
+                raster_dict = {
+                    'ecosystem_condition': (eco_array, eco_profile),
+                    'regulating_es': (reg_array, reg_profile),
+                    'anthropogenic_pressure': (pressure_array, pressure_profile),
+                    'cultural_es': (cult_array, cult_profile),
+                    'provisioning_es': (prov_array, prov_profile),
+                    'landuse': (landuse_array, landuse_profile)
+                }
+
+                aligned = raster_preprocessing.align_rasters(raster_dict)
+
+                # Extract aligned arrays
+                eco_aligned = aligned['ecosystem_condition'][0]
+                reg_aligned = aligned['regulating_es'][0]
+                pressure_aligned = aligned['anthropogenic_pressure'][0]
+                cult_aligned = aligned['cultural_es'][0]
+                prov_aligned = aligned['provisioning_es'][0]
+                landuse_aligned = aligned['landuse'][0]
+
+                # Use first profile as reference
+                reference_profile = aligned['ecosystem_condition'][1]
+
+                st.success("Rasters aligned to common grid!")
+
+            except Exception as e:
+                st.error(f"Raster alignment failed: {str(e)}")
+                st.stop()
+
+        with st.spinner("Computing favourability scores..."):
+            try:
+                # Prepare weight structure
+                weights = {
+                    'inter_group_weights': {
+                        'W_A': parameters['W_A'],
+                        'W_B': parameters['W_B'],
+                        'W_C': parameters['W_C']
+                    },
+                    'group_a_weights': {
+                        'ecosystem_condition': parameters['w_condition'],
+                        'regulating_es': parameters['w_regulating_es'],
+                        'low_pressure': parameters['w_pressure']
+                    },
+                    'group_b_weights': {
+                        'cultural_es': parameters['w_cultural_es']
+                    },
+                    'group_c_weights': {
+                        'provisioning_es': parameters['w_provisioning_es'],
+                        'compatible_landuse': parameters['w_landuse_compatible']
+                    }
+                }
+
+                # Run MCE
+                results = mce_engine.compute_favourability(
+                    ecosystem_condition=eco_aligned,
+                    regulating_es=reg_aligned,
+                    cultural_es=cult_aligned,
+                    provisioning_es=prov_aligned,
+                    anthropogenic_pressure=pressure_aligned,
+                    landuse=landuse_aligned,
+                    weights=weights,
+                    method=parameters['method'],
+                    alpha=parameters['alpha']
+                )
+
+                # Store results in session state
+                st.session_state['score_array'] = results['score']
+                st.session_state['oecm_mask'] = results['oecm_mask']
+                st.session_state['classical_pa_mask'] = results['classical_pa_mask']
+                st.session_state['raster_profile'] = reference_profile
+
+                st.success("MCE analysis complete!")
+
+            except Exception as e:
+                st.error(f"MCE computation failed: {str(e)}")
+                logger.exception("MCE computation error:")
+                st.stop()
+
     # Retrieve Module 2 results from session state if available
     score_array = st.session_state.get('score_array', None)
     oecm_mask = st.session_state.get('oecm_mask', None)
     classical_pa_mask = st.session_state.get('classical_pa_mask', None)
     raster_profile = st.session_state.get('raster_profile', None)
 
+    st.markdown("---")
+
     # Render Module 2 tab
     render_tab_module2(
         score_array=score_array,
         oecm_mask=oecm_mask,
         classical_pa_mask=classical_pa_mask,
-        profile=raster_profile
+        profile=raster_profile,
+        params=parameters
     )
 
 # ===================================================================
