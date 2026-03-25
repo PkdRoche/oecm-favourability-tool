@@ -55,9 +55,9 @@ st.markdown(
     <style>
     /* Tab labels */
     .stTabs [data-baseweb="tab"] {
-        font-size: 1.1rem;
-        font-weight: 600;
-        padding: 0.6rem 1.4rem;
+        font-size: 1.6rem;
+        font-weight: 700;
+        padding: 0.7rem 1.8rem;
         letter-spacing: 0.01em;
     }
     /* Active tab underline accent */
