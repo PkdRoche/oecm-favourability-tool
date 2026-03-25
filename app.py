@@ -178,15 +178,26 @@ with tab2:
                     with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
                         tmp.write(uploaded_file.read())
                         tmp.flush()
-                        return raster_preprocessing.load_raster(tmp.name)
+                        tmp_path = tmp.name
+                        return raster_preprocessing.load_raster(tmp_path), tmp_path
 
-                # Load all layers
-                eco_array, eco_profile = load_uploaded_raster(ecosystem_condition_file)
-                reg_array, reg_profile = load_uploaded_raster(regulating_es_file)
-                pressure_array, pressure_profile = load_uploaded_raster(pressure_file)
-                cult_array, cult_profile = load_uploaded_raster(cultural_es_file)
-                prov_array, prov_profile = load_uploaded_raster(provisioning_es_file)
-                landuse_array, landuse_profile = load_uploaded_raster(landuse_file)
+                # Load all layers and store paths
+                (eco_array, eco_profile), eco_path = load_uploaded_raster(ecosystem_condition_file)
+                (reg_array, reg_profile), reg_path = load_uploaded_raster(regulating_es_file)
+                (pressure_array, pressure_profile), pressure_path = load_uploaded_raster(pressure_file)
+                (cult_array, cult_profile), cult_path = load_uploaded_raster(cultural_es_file)
+                (prov_array, prov_profile), prov_path = load_uploaded_raster(provisioning_es_file)
+                (landuse_array, landuse_profile), landuse_path = load_uploaded_raster(landuse_file)
+
+                # Store raster paths in session state for zonal statistics in Module 1
+                st.session_state['criterion_raster_paths'] = {
+                    'ecosystem_condition': eco_path,
+                    'regulating_es': reg_path,
+                    'anthropogenic_pressure': pressure_path,
+                    'cultural_es': cult_path,
+                    'provisioning_es': prov_path,
+                    'landuse': landuse_path
+                }
 
                 st.success("All layers loaded successfully!")
 

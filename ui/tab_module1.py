@@ -7,6 +7,9 @@ from streamlit_folium import st_folium
 from pathlib import Path
 import yaml
 import tempfile
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def load_iucn_classification():
@@ -460,6 +463,164 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
 
     else:
         st.info("Click 'Run Gap Analysis' to compute and display gap layers.")
+
+    st.markdown("---")
+
+    # ===================================================================
+    # Criterion profiles within existing protected areas
+    # ===================================================================
+    st.markdown("### Criterion profiles within existing protected areas")
+
+    try:
+        # Check if raster paths are available in session state
+        raster_paths = st.session_state.get('criterion_raster_paths', None)
+
+        if raster_paths is None or len(raster_paths) == 0:
+            st.info(
+                "Raster paths for MCE criteria not yet available. "
+                "Run Module 2 analysis first to enable criterion profiling within PAs."
+            )
+        else:
+            # Import zonal stats functions
+            from modules.module1_protected_areas.zonal_stats import (
+                zonal_stats_by_pa_class,
+                criterion_coverage_summary
+            )
+
+            if st.button("Compute Criterion Profiles"):
+                with st.spinner("Computing zonal statistics for all criteria..."):
+                    try:
+                        # Compute zonal statistics
+                        zonal_df = zonal_stats_by_pa_class(pa_gdf, raster_paths)
+
+                        if len(zonal_df) == 0:
+                            st.warning("No zonal statistics computed (no valid overlaps)")
+                        else:
+                            # Store in session state
+                            st.session_state['zonal_stats'] = zonal_df
+
+                            st.success(
+                                f"Computed statistics for {len(zonal_df['criterion'].unique())} criteria "
+                                f"across {len(zonal_df['pa_class'].unique())} protection classes"
+                            )
+
+                    except Exception as e:
+                        st.error(f"Failed to compute zonal statistics: {str(e)}")
+                        logger.exception("Zonal statistics computation error:")
+
+            # Display results if available
+            if 'zonal_stats' in st.session_state and st.session_state['zonal_stats'] is not None:
+                zonal_df = st.session_state['zonal_stats']
+
+                # Row 1: Grouped bar chart
+                st.markdown("#### Mean Criterion Scores by Protection Class")
+
+                try:
+                    import plotly.express as px
+
+                    # Prepare data for grouped bar chart
+                    chart_data = zonal_df[['criterion', 'pa_class', 'mean']].copy()
+
+                    # Sort PA classes: protection classes first, then 'outside'
+                    pa_class_order = sorted([c for c in chart_data['pa_class'].unique() if c != 'outside'])
+                    if 'outside' in chart_data['pa_class'].unique():
+                        pa_class_order.append('outside')
+
+                    # Create grouped bar chart
+                    fig = px.bar(
+                        chart_data,
+                        x='criterion',
+                        y='mean',
+                        color='pa_class',
+                        barmode='group',
+                        category_orders={'pa_class': pa_class_order},
+                        labels={
+                            'criterion': 'Criterion',
+                            'mean': 'Mean Score',
+                            'pa_class': 'Protection Class'
+                        },
+                        title='',
+                        color_discrete_sequence=px.colors.qualitative.Set2
+                    )
+
+                    fig.update_layout(
+                        xaxis_tickangle=-45,
+                        height=400,
+                        legend=dict(
+                            orientation="v",
+                            yanchor="top",
+                            y=1.0,
+                            xanchor="left",
+                            x=1.02
+                        )
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+                except ImportError:
+                    # Fallback to simpler visualization if plotly not available
+                    st.warning("Plotly not available. Install plotly for interactive charts.")
+                    st.bar_chart(
+                        zonal_df.pivot(index='criterion', columns='pa_class', values='mean')
+                    )
+
+                # Row 2: Summary pivot table
+                st.markdown("#### Summary: Mean Scores by PA Class")
+
+                try:
+                    summary_df = criterion_coverage_summary(zonal_df)
+
+                    # Format for display
+                    display_summary = summary_df.copy()
+                    for col in display_summary.columns:
+                        display_summary[col] = display_summary[col].apply(lambda x: f"{x:.3f}" if pd.notna(x) else "—")
+
+                    st.dataframe(
+                        display_summary,
+                        use_container_width=True
+                    )
+
+                except Exception as e:
+                    st.error(f"Failed to generate summary table: {str(e)}")
+
+                # Row 3: Expandable detailed statistics
+                with st.expander("Detailed Statistics (min/median/max/std)"):
+                    st.markdown("**Per-criterion box-plot statistics:**")
+
+                    # Create detailed table
+                    detailed_stats = []
+
+                    for criterion in zonal_df['criterion'].unique():
+                        criterion_data = zonal_df[zonal_df['criterion'] == criterion]
+
+                        for pa_class in criterion_data['pa_class'].unique():
+                            class_data = criterion_data[criterion_data['pa_class'] == pa_class]
+
+                            if len(class_data) > 0:
+                                row = class_data.iloc[0]
+                                detailed_stats.append({
+                                    'Criterion': criterion,
+                                    'PA Class': pa_class,
+                                    'Min': f"{row['min']:.3f}",
+                                    'Median': f"{row['median']:.3f}",
+                                    'Max': f"{row['max']:.3f}",
+                                    'Std': f"{row['std']:.3f}",
+                                    'Pixel Count': f"{row['pixel_count']:,}"
+                                })
+
+                    detailed_df = pd.DataFrame(detailed_stats)
+
+                    st.dataframe(
+                        detailed_df,
+                        hide_index=True,
+                        use_container_width=True
+                    )
+
+    except Exception as e:
+        st.warning(
+            f"Criterion profiling unavailable: {str(e)}\n\n"
+            "This feature requires raster paths to be available in session state."
+        )
 
     st.markdown("---")
 
