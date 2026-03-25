@@ -880,6 +880,9 @@ def validate_and_rescale_layer(
     array_work = array.astype(np.float64)
     for sentinel in NODATA_SENTINELS:
         array_work[array_work == sentinel] = np.nan
+    # Also mask float32 min/max sentinels (GDAL convention: ±3.4028e+38)
+    f32_max = float(np.finfo(np.float32).max)
+    array_work[np.abs(array_work) >= f32_max * 0.9] = np.nan
     # For CLC, 0 and 128 are also NoData
     if criterion_key == 'landuse':
         array_work[array_work == 0] = np.nan

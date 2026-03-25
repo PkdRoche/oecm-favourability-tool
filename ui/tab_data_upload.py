@@ -171,6 +171,21 @@ def render():
         )
     )
 
+    def _clear_pa_gdf():
+        """Reset cached PA GeoDataFrame when marine filter changes."""
+        st.session_state.pop('pa_gdf', None)
+
+    st.checkbox(
+        "Exclude marine protected areas (MARINE = 2)",
+        value=st.session_state.get('exclude_marine_pa', True),
+        key='exclude_marine_pa',
+        on_change=_clear_pa_gdf,
+        help=(
+            "Removes fully marine PAs (WDPA MARINE column = 2) from the analysis. "
+            "Coastal PAs (MARINE = 1) are kept. Change requires re-running the diagnostic."
+        )
+    )
+
     # Store WDPA file in session state
     if wdpa_uploaded_file is not None:
         import zipfile, os

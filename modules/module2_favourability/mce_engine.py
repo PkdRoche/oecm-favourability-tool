@@ -316,7 +316,8 @@ def compute_favourability(
     landuse: np.ndarray,
     weights: dict,
     method: str = "geometric",
-    alpha: float = 0.25
+    alpha: float = 0.25,
+    threshold_pressure: float = 150.0
 ) -> dict[str, np.ndarray]:
     """Compute full MCE favourability pipeline.
 
@@ -414,8 +415,8 @@ def compute_favourability(
     transform_config = _load_transformation_config()
     landuse_config = _load_landuse_config()
 
-    # Extract thresholds
-    max_pressure = criteria_config['eliminatory']['max_anthropogenic_pressure']
+    # Extract thresholds — use caller-supplied pressure threshold (from sidebar slider)
+    max_pressure = threshold_pressure
     min_use_threshold = criteria_config['use_presence']['min_group_c_score']
 
     # Build incompatible classes list from landuse config

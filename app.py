@@ -136,18 +136,15 @@ with tab2:
     )
 
 with tab3:
+    st.header("Module 2 — OECM Favourability Analysis")
+
     # Check if data has been uploaded
     data_ready_module2 = st.session_state.get('data_ready_module2', False)
+    score_array = st.session_state.get('score_array', None)
 
     if not data_ready_module2:
         st.info(
-            "Please upload your input data in the **① Data Upload** tab first."
-        )
-        st.markdown(
-            """
-            Module 2 requires all 6 criterion rasters to be uploaded.
-            Navigate to the **① Data Upload** tab to upload the required layers.
-            """
+            "Upload all 6 criterion rasters in the **① Data Upload** tab first."
         )
     else:
         # Retrieve raster paths from session state
@@ -286,13 +283,15 @@ with tab3:
                         landuse=landuse_aligned,
                         weights=weights,
                         method=parameters['method'],
-                        alpha=parameters['alpha']
+                        alpha=parameters['alpha'],
+                        threshold_pressure=parameters.get('threshold_pressure', 150.0)
                     )
 
                     # Store results in session state
                     st.session_state['score_array'] = results['score']
                     st.session_state['oecm_mask'] = results['oecm_mask']
                     st.session_state['classical_pa_mask'] = results['classical_pa_mask']
+                    st.session_state['eliminatory_mask'] = results['eliminatory_mask']
                     st.session_state['raster_profile'] = reference_profile
 
                     st.success("MCE analysis complete!")
@@ -302,22 +301,26 @@ with tab3:
                     logger.exception("MCE computation error:")
                     st.stop()
 
-    # Retrieve Module 2 results from session state if available
-    score_array = st.session_state.get('score_array', None)
-    oecm_mask = st.session_state.get('oecm_mask', None)
-    classical_pa_mask = st.session_state.get('classical_pa_mask', None)
-    raster_profile = st.session_state.get('raster_profile', None)
+    # Show results when analysis has been run
+    if data_ready_module2 and score_array is None:
+        st.info(
+            "Configure weights in the sidebar and click **Run MCE Analysis** above "
+            "to compute favourability scores."
+        )
+    elif score_array is not None:
+        oecm_mask = st.session_state.get('oecm_mask', None)
+        classical_pa_mask = st.session_state.get('classical_pa_mask', None)
+        eliminatory_mask = st.session_state.get('eliminatory_mask', None)
+        raster_profile = st.session_state.get('raster_profile', None)
 
-    st.markdown("---")
-
-    # Render Module 2 tab
-    render_tab_module2(
-        score_array=score_array,
-        oecm_mask=oecm_mask,
-        classical_pa_mask=classical_pa_mask,
-        profile=raster_profile,
-        params=parameters
-    )
+        render_tab_module2(
+            score_array=score_array,
+            oecm_mask=oecm_mask,
+            classical_pa_mask=classical_pa_mask,
+            eliminatory_mask=eliminatory_mask,
+            profile=raster_profile,
+            params=parameters
+        )
 
 # ===================================================================
 # Footer

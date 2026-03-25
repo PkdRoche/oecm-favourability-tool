@@ -16,146 +16,95 @@ from datetime import datetime
 import plotly.graph_objects as go
 
 
-def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None, profile=None, params=None):
+def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
+                       eliminatory_mask=None, profile=None, params=None):
     """
-    Render Module 2 interface with criteria upload, MCE execution, and results display.
+    Render Module 2 results. Called only when score_array is available.
 
     Parameters
     ----------
-    score_array : np.ndarray, optional
-        Favourability score array [0-1]. If None, displays placeholder UI.
-    oecm_mask : np.ndarray, optional
-        Binary mask: 1 = OECM favourable, 0 = not OECM favourable.
-    classical_pa_mask : np.ndarray, optional
-        Binary mask: 1 = classical PA preferable (Group C score too low), 0 = not.
-    profile : dict, optional
-        Rasterio profile (CRS, transform, dimensions) for georeferencing.
+    score_array : np.ndarray
+        Favourability score array [0-1], NaN where eliminated.
+    oecm_mask : np.ndarray
+        Boolean mask: True = OECM favourable (Group C >= threshold).
+    classical_pa_mask : np.ndarray
+        Boolean mask: True = classical PA preferable (Group C < threshold).
+    eliminatory_mask : np.ndarray, optional
+        Boolean mask: True = pixel passed Group D (not eliminated).
+    profile : dict
+        Rasterio profile (CRS, transform, dimensions).
     params : dict, optional
         Full parameter dictionary from sidebar for reproducibility logging.
     """
-    st.header("Module 2 — OECM Favourability Analysis")
-
     # ===================================================================
-    # Check if data has been uploaded
-    # ===================================================================
-    data_ready_module2 = st.session_state.get('data_ready_module2', False)
-
-    if not data_ready_module2:
-        st.info(
-            "Please upload your input data in the **① Data Upload** tab first."
-        )
-        st.markdown(
-            """
-            Module 2 requires the following raster layers (all in EPSG:3035):
-
-            **Group A — Ecological Integrity:**
-            - Ecosystem condition [0-1]
-            - Regulating ES capacity [0-1]
-            - Anthropogenic pressure (hab/km²)
-
-            **Group B — Co-benefits:**
-            - Cultural ES capacity [0-1]
-
-            **Group C — Production Function:**
-            - Provisioning ES capacity [0-1]
-            - Land use / land cover (categorical)
-
-            Navigate to the **① Data Upload** tab to upload these layers.
-            """
-        )
-        return
-
-    # ===================================================================
-    # Check if analysis has been run
-    # ===================================================================
-    if score_array is None:
-        # Friendly placeholder with Run Analysis button
-        st.info(
-            "Configure weights in the sidebar and click **Run MCE Analysis** "
-            "in the Data Upload tab to compute favourability scores."
-        )
-
-        st.markdown("### Required Input Layers")
-        st.markdown(
-            """
-            Module 2 requires the following raster layers (all in same CRS and resolution):
-
-            **Group A — Ecological Integrity:**
-            - Ecosystem condition [0-1]
-            - Regulating ES capacity [0-1]
-            - Anthropogenic pressure (raw values, hab/km²)
-
-            **Group B — Co-benefits:**
-            - Cultural ES capacity [0-1]
-
-            **Group C — Production Function:**
-            - Provisioning ES capacity [0-1]
-            - Land use / land cover (categorical: CLC, OSO, or equivalent)
-
-            **Group D — Eliminatory Criteria:**
-            - Anthropogenic pressure threshold (configured in sidebar)
-            - Incompatible land use classes (defined in config/land_use_compatibility.yaml)
-            """
-        )
-
-        st.markdown("### Workflow")
-        st.markdown(
-            """
-            1. Upload all required raster layers (GeoTIFF format)
-            2. Configure aggregation method and weights in sidebar
-            3. Click 'Run MCE Analysis' to compute favourability scores
-            4. Review results: map, statistics, score distribution
-            5. Export outputs: GeoTIFF, shapefile, CSV, PDF report
-            """
-        )
-
-        return
-
-    # ===================================================================
-    # Row 1: Three metric cards
+    # Row 1: Summary metric cards
     # ===================================================================
     st.subheader("Favourability Summary")
 
-    # Compute statistics
-    oecm_area_ha = np.sum(oecm_mask) * (profile['transform'][0] ** 2) / 10000.0 if oecm_mask is not None else 0.0
-    classical_pa_area_ha = np.sum(classical_pa_mask) * (profile['transform'][0] ** 2) / 10000.0 if classical_pa_mask is not None else 0.0
+    pixel_area_ha = (profile['transform'][0] ** 2) / 10000.0
+    territory_area_ha = profile['width'] * profile['height'] * pixel_area_ha
 
-    # Territory area (from profile dimensions)
-    territory_area_ha = (profile['width'] * profile['height'] * (profile['transform'][0] ** 2)) / 10000.0
+    valid_mask = ~np.isnan(score_array)
+    n_valid = int(np.sum(valid_mask))
+    n_total = score_array.size
+    n_eliminated = n_total - n_valid
 
+    oecm_area_ha = float(np.sum(oecm_mask)) * pixel_area_ha if oecm_mask is not None else 0.0
+    classical_pa_area_ha = float(np.sum(classical_pa_mask)) * pixel_area_ha if classical_pa_mask is not None else 0.0
     oecm_pct = (oecm_area_ha / territory_area_ha * 100.0) if territory_area_ha > 0 else 0.0
     classical_pa_pct = (classical_pa_area_ha / territory_area_ha * 100.0) if territory_area_ha > 0 else 0.0
 
-    # Median favourability score (OECM favourable pixels only)
-    if oecm_mask is not None and np.sum(oecm_mask) > 0:
-        oecm_scores = score_array[oecm_mask == 1]
-        median_score = np.median(oecm_scores)
-    else:
-        median_score = 0.0
+    valid_scores = score_array[valid_mask]
+    median_score = float(np.median(valid_scores)) if len(valid_scores) > 0 else 0.0
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
+
+    eligible_area_ha = n_valid * pixel_area_ha
+    eligible_pct = (eligible_area_ha / territory_area_ha * 100.0) if territory_area_ha > 0 else 0.0
 
     with col1:
         st.metric(
-            label="OECM Favourable Area",
-            value=f"{oecm_area_ha:,.0f} ha",
-            delta=f"{oecm_pct:.1f}% of territory",
-            help="Areas with sufficient production function (Group C > threshold)"
+            label="Eligible Area (passed Group D)",
+            value=f"{eligible_area_ha:,.0f} ha",
+            delta=f"{eligible_pct:.1f}% of territory",
+            help="Pixels not eliminated by pressure or incompatible land use"
         )
 
     with col2:
         st.metric(
-            label="Classical PA Preferable",
-            value=f"{classical_pa_area_ha:,.0f} ha",
-            delta=f"{classical_pa_pct:.1f}% of territory",
-            help="Areas with low production function — better suited to classical PA designation"
+            label="OECM Favourable",
+            value=f"{oecm_area_ha:,.0f} ha",
+            delta=f"{oecm_pct:.1f}% of territory",
+            help="Eligible pixels with sufficient production function (Group C ≥ threshold)"
         )
 
     with col3:
         st.metric(
-            label="Median Favourability Score",
+            label="Low use-function (MCE Group C < 0.10)",
+            value=f"{classical_pa_area_ha:,.0f} ha",
+            delta=f"{classical_pa_pct:.1f}% of territory",
+            help=(
+                "Eligible pixels where Group C score (provisioning ES + compatible land use) "
+                "is below 0.10 — these areas lack sufficient production function for OECM "
+                "and may be better candidates for classical PA designation. "
+                "This is NOT the existing WDPA protected area network."
+            )
+        )
+
+    with col4:
+        st.metric(
+            label="Median Score (eligible)",
             value=f"{median_score:.2f}",
-            help="Median score across OECM favourable pixels (0-1 scale)"
+            help="Median favourability score across all eligible pixels (0-1 scale)"
+        )
+
+    # Elimination diagnostic
+    elim_pct = (n_eliminated / n_total * 100.0) if n_total > 0 else 0.0
+    if n_eliminated > 0:
+        st.caption(
+            f"Group D eliminated {n_eliminated:,} pixels ({elim_pct:.1f}% of grid) — "
+            "high anthropogenic pressure or incompatible land use. "
+            "Adjust the pressure threshold in the sidebar to change this."
         )
 
     st.markdown("---")
@@ -172,25 +121,27 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
         st.subheader("Favourability Map")
 
         # Create folium map with raster overlay
+        if n_valid == 0:
+            st.warning(
+                "All pixels were eliminated by Group D criteria (pressure threshold or "
+                "incompatible land use). Increase the pressure threshold in the sidebar "
+                "or verify your input layers cover the study area."
+            )
+
         try:
             # Convert score_array to PNG using RdYlGn colormap
             # Use matplotlib to create RGBA image
-            from matplotlib.cm import get_cmap
+            import matplotlib.cm as mcm
             from rasterio.warp import transform_bounds
 
             # Create colormap (RdYlGn: red=0, yellow=0.5, green=1)
-            cmap = get_cmap('RdYlGn')
+            cmap = mcm.get_cmap('RdYlGn')
             norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
 
-            # Convert favourability scores to RGBA
+            # Convert favourability scores to RGBA (valid_mask defined at function scope)
             rgba = np.zeros((*score_array.shape, 4), dtype=np.uint8)
-
-            # Apply colormap to valid pixels
-            valid_mask = ~np.isnan(score_array)
             rgba[valid_mask] = (cmap(norm(score_array[valid_mask])) * 255).astype(np.uint8)
-
-            # Set invalid pixels as transparent
-            rgba[~valid_mask, 3] = 0
+            rgba[~valid_mask, 3] = 0  # transparent for eliminated / NoData pixels
 
             # Convert to PIL Image
             img_pil = Image.fromarray(rgba, mode='RGBA')
@@ -327,10 +278,9 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
             st.session_state['export_threshold'] = threshold
 
         with threshold_col2:
-            # Compute area above threshold
-            above_threshold = score_array >= threshold
-            area_above_ha = np.sum(above_threshold) * (profile['transform'][0] ** 2) / 10000.0
-            territory_area_ha = (profile['width'] * profile['height'] * (profile['transform'][0] ** 2)) / 10000.0
+            # Compute area above threshold (only non-NaN pixels)
+            above_threshold = valid_mask & (score_array >= threshold)
+            area_above_ha = np.sum(above_threshold) * pixel_area_ha
             pct_above = (area_above_ha / territory_area_ha * 100.0) if territory_area_ha > 0 else 0.0
 
             st.metric(
@@ -341,82 +291,86 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
 
     with subtab2:
         # =================================================================
-        # STATISTICS TAB: Score distribution + per-criterion contribution
+        # STATISTICS TAB: Score distribution for all eligible pixels
         # =================================================================
         st.subheader("Score Distribution")
 
-        if oecm_mask is not None and np.sum(oecm_mask) > 0:
-            oecm_scores = score_array[oecm_mask == 1]
+        if len(valid_scores) > 0:
+            n_oecm = int(np.sum(oecm_mask)) if oecm_mask is not None else 0
+            n_classical = int(np.sum(classical_pa_mask)) if classical_pa_mask is not None else 0
 
-            # Create histogram with plotly (colored by score value using RdYlGn)
-            hist_counts, bin_edges = np.histogram(oecm_scores, bins=20, range=(0, 1))
+            # Histogram of ALL eligible pixel scores (not just OECM-favourable)
+            hist_counts, bin_edges = np.histogram(valid_scores, bins=20, range=(0, 1))
             bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
-            # Color bins by their center value
             bin_colors = []
             for bc in bin_centers:
                 if bc < 0.33:
-                    bin_colors.append('#d7191c')  # Red
+                    bin_colors.append('#d7191c')   # Red
                 elif bc < 0.67:
-                    bin_colors.append('#fdae61')  # Yellow
+                    bin_colors.append('#fdae61')   # Yellow
                 else:
-                    bin_colors.append('#1a9641')  # Green
+                    bin_colors.append('#1a9641')   # Green
 
             fig_hist = go.Figure(data=[go.Bar(
                 x=bin_centers,
                 y=hist_counts,
                 marker_color=bin_colors,
-                name='Pixel count'
+                name='All eligible pixels'
             )])
 
-            # Add vertical line at threshold
             export_threshold = st.session_state.get('export_threshold', 0.5)
             fig_hist.add_vline(
                 x=export_threshold,
                 line_dash="dash",
                 line_color="black",
                 line_width=2,
-                annotation_text=f"Threshold: {export_threshold:.2f}",
+                annotation_text=f"Export threshold: {export_threshold:.2f}",
                 annotation_position="top"
             )
 
             fig_hist.update_layout(
                 xaxis_title="Favourability Score",
-                yaxis_title="Pixel Count",
+                yaxis_title="Pixel Count (eligible pixels)",
                 showlegend=False,
                 height=350
             )
 
             st.plotly_chart(fig_hist, use_container_width=True)
 
-            # Summary statistics
+            if n_oecm == 0:
+                st.warning(
+                    "No pixels classified as OECM-favourable — Group C score "
+                    f"(provisioning ES + compatible land use) is below the minimum "
+                    "threshold (0.10) for all eligible pixels. "
+                    "Check that provisioning_es and land use layers have valid values."
+                )
+
+            # Summary statistics for all eligible pixels
             col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
-
             with col_stat1:
-                st.metric("Mean", f"{np.mean(oecm_scores):.3f}")
-
+                st.metric("Mean (eligible)", f"{np.mean(valid_scores):.3f}")
             with col_stat2:
-                st.metric("Median", f"{np.median(oecm_scores):.3f}")
-
+                st.metric("Median (eligible)", f"{np.median(valid_scores):.3f}")
             with col_stat3:
-                st.metric("Std Dev", f"{np.std(oecm_scores):.3f}")
-
+                st.metric("Std Dev", f"{np.std(valid_scores):.3f}")
             with col_stat4:
-                above_05 = np.sum(oecm_scores >= 0.5) / len(oecm_scores) * 100
-                st.metric("% ≥ 0.5", f"{above_05:.1f}%")
+                above_05 = np.sum(valid_scores >= 0.5) / len(valid_scores) * 100
+                st.metric("% eligible ≥ 0.5", f"{above_05:.1f}%")
 
             col_stat5, col_stat6 = st.columns(2)
-
             with col_stat5:
-                above_07 = np.sum(oecm_scores >= 0.7) / len(oecm_scores) * 100
-                st.metric("% area ≥ 0.7", f"{above_07:.1f}%")
-
+                above_07 = np.sum(valid_scores >= 0.7) / len(valid_scores) * 100
+                st.metric("% eligible ≥ 0.7", f"{above_07:.1f}%")
             with col_stat6:
-                area_above_07_ha = np.sum(oecm_scores >= 0.7) * (profile['transform'][0] ** 2) / 10000.0
+                area_above_07_ha = np.sum(valid_scores >= 0.7) * pixel_area_ha
                 st.metric("Area ≥ 0.7 (ha)", f"{area_above_07_ha:,.0f}")
 
         else:
-            st.info("No OECM favourable pixels found with current parameters.")
+            st.warning(
+                "No eligible pixels found — all pixels were eliminated by Group D criteria. "
+                "Increase the pressure threshold in the sidebar or verify input layers."
+            )
 
         st.markdown("---")
 
@@ -659,20 +613,34 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
     with col_exp3:
         if st.button("Export CSV Stats"):
             try:
-                # Create simple stats dataframe
+                # Build comprehensive stats table
+                pa_gdf = st.session_state.get('pa_gdf')
+                wdpa_area_ha = 0.0
+                n_pa_sites = 0
+                if pa_gdf is not None:
+                    try:
+                        wdpa_area_ha = float(pa_gdf.geometry.union_all().area) / 10000.0
+                        n_pa_sites = len(pa_gdf)
+                    except Exception:
+                        pass
+
                 stats_df = pd.DataFrame([
-                    {
-                        'metric': 'OECM favourable area (ha)',
-                        'value': f"{oecm_area_ha:.2f}"
-                    },
-                    {
-                        'metric': 'Classical PA area (ha)',
-                        'value': f"{classical_pa_area_ha:.2f}"
-                    },
-                    {
-                        'metric': 'Median score',
-                        'value': f"{median_score:.3f}"
-                    }
+                    {'metric': 'Territory grid area (ha)',
+                     'value': f"{territory_area_ha:.0f}"},
+                    {'metric': 'Eligible area — passed Group D (ha)',
+                     'value': f"{eligible_area_ha:.0f}"},
+                    {'metric': 'Eliminated — high pressure or incompatible LU (ha)',
+                     'value': f"{n_eliminated * pixel_area_ha:.0f}"},
+                    {'metric': 'OECM favourable area — MCE Group C ≥ 0.10 (ha)',
+                     'value': f"{oecm_area_ha:.0f}"},
+                    {'metric': 'Low use-function area — MCE Group C < 0.10 (ha)',
+                     'value': f"{classical_pa_area_ha:.0f}"},
+                    {'metric': 'Median favourability score (eligible pixels)',
+                     'value': f"{median_score:.3f}"},
+                    {'metric': 'Existing WDPA protected area — union (ha)',
+                     'value': f"{wdpa_area_ha:.0f}" if wdpa_area_ha > 0 else 'Not loaded'},
+                    {'metric': 'Existing WDPA sites (count)',
+                     'value': str(n_pa_sites) if n_pa_sites > 0 else 'Not loaded'},
                 ])
 
                 with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv') as tmp:
@@ -700,20 +668,48 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
     with col_exp4:
         if st.button("Generate PDF Report"):
             try:
-                # Create temporary map image
+                # Create temporary map image from score_array
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_img:
-                    # Save current map as PNG (simplified)
+                    import matplotlib.cm as mcm
+                    _cmap = mcm.get_cmap('RdYlGn')
+                    _norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
+                    _rgba = np.zeros((*score_array.shape, 4), dtype=np.uint8)
+                    _vm = ~np.isnan(score_array)
+                    _rgba[_vm] = (_cmap(_norm(score_array[_vm])) * 255).astype(np.uint8)
                     fig_map, ax = plt.subplots(figsize=(10, 8))
-                    ax.imshow(rgba)
+                    ax.imshow(_rgba)
                     ax.axis('off')
                     plt.savefig(tmp_img.name, bbox_inches='tight', dpi=150)
                     plt.close()
 
-                    # Create stats dataframe
+                    # Build comprehensive stats table for PDF
+                    pa_gdf = st.session_state.get('pa_gdf')
+                    wdpa_area_ha_pdf = 0.0
+                    n_pa_sites_pdf = 0
+                    if pa_gdf is not None:
+                        try:
+                            wdpa_area_ha_pdf = float(pa_gdf.geometry.union_all().area) / 10000.0
+                            n_pa_sites_pdf = len(pa_gdf)
+                        except Exception:
+                            pass
+
                     stats_df = pd.DataFrame([
-                        {'Metric': 'OECM favourable area (ha)', 'Value': f"{oecm_area_ha:.2f}"},
-                        {'Metric': 'Classical PA area (ha)', 'Value': f"{classical_pa_area_ha:.2f}"},
-                        {'Metric': 'Median favourability score', 'Value': f"{median_score:.3f}"}
+                        {'Metric': 'Territory grid area (ha)',
+                         'Value': f"{territory_area_ha:.0f}"},
+                        {'Metric': 'Eligible area — passed Group D (ha)',
+                         'Value': f"{eligible_area_ha:.0f}"},
+                        {'Metric': 'Eliminated — pressure / incompatible LU (ha)',
+                         'Value': f"{n_eliminated * pixel_area_ha:.0f}"},
+                        {'Metric': 'OECM favourable area — MCE Group C ≥ 0.10 (ha)',
+                         'Value': f"{oecm_area_ha:.0f}"},
+                        {'Metric': 'Low use-function — MCE Group C < 0.10 (ha)',
+                         'Value': f"{classical_pa_area_ha:.0f}"},
+                        {'Metric': 'Median favourability score (eligible pixels)',
+                         'Value': f"{median_score:.3f}"},
+                        {'Metric': 'Existing WDPA protected area — union (ha)',
+                         'Value': f"{wdpa_area_ha_pdf:.0f}" if wdpa_area_ha_pdf > 0 else 'Not loaded'},
+                        {'Metric': 'Existing WDPA sites (count)',
+                         'Value': str(n_pa_sites_pdf) if n_pa_sites_pdf > 0 else 'Not loaded'},
                     ])
 
                     # Add timestamp and spec version to params
@@ -773,10 +769,16 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
             if 'spec_version' not in params_full:
                 params_full['spec_version'] = 'v0.1'
 
-            st.json(params_full)
+            def _json_safe(obj):
+                """Convert non-serializable objects to strings."""
+                if hasattr(obj, 'wkt'):  # shapely geometry
+                    return obj.wkt
+                if hasattr(obj, 'isoformat'):  # datetime
+                    return obj.isoformat()
+                return str(obj)
 
-            # Provide download button
-            json_str = json.dumps(params_full, indent=2)
+            json_str = json.dumps(params_full, indent=2, default=_json_safe)
+            st.json(json.loads(json_str))
             st.download_button(
                 label="Download Parameters (JSON)",
                 data=json_str,

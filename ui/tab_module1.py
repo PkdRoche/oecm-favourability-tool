@@ -76,6 +76,14 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                     with open(config_path, 'r', encoding='utf-8') as f:
                         classification_table = yaml.safe_load(f)
                     gdf = load_wdpa_local(wdpa_file)
+                    if st.session_state.get('exclude_marine_pa', True):
+                        if 'MARINE' in gdf.columns:
+                            n_marine = int((gdf['MARINE'] == 2).sum())
+                            gdf = gdf[gdf['MARINE'] != 2].copy()
+                            if n_marine:
+                                st.info(f"Excluded {n_marine} fully marine PA(s) (MARINE = 2).")
+                        else:
+                            st.caption("MARINE column not found in WDPA file — marine filter not applied.")
                     gdf = filter_to_extent(gdf, territory_geom)
                     gdf = classify_iucn(gdf, classification_table)
                     st.session_state['pa_gdf'] = gdf
