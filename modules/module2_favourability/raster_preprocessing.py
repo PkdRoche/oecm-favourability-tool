@@ -885,13 +885,24 @@ def validate_and_rescale_layer(
         array_work[array_work == 0] = np.nan
         array_work[array_work == 128] = np.nan
 
-    # Calculate min/max ignoring NaN
+    # Calculate raw min/max BEFORE negative masking (for reporting)
     valid_mask = ~np.isnan(array_work)
     if not np.any(valid_mask):
         raise ValueError(f"Array for '{criterion_key}' contains only NaN/NoData values")
 
     original_min = float(np.nanmin(array_work))
     original_max = float(np.nanmax(array_work))
+
+    # For continuous [0-1] layers, mask negative values as NoData AFTER recording original range
+    continuous_criteria = {'ecosystem_condition', 'regulating_es', 'cultural_es', 'provisioning_es'}
+    if criterion_key in continuous_criteria:
+        n_negative = int(np.sum(array_work < 0))
+        if n_negative > 0:
+            array_work[array_work < 0] = np.nan
+            logger.warning(
+                f"Masked {n_negative} negative pixels to NaN in '{criterion_key}' "
+                "(negative values are invalid for [0-1] integrity layers)"
+            )
 
     logger.info(f"Original value range: [{original_min:.4f}, {original_max:.4f}]")
 
@@ -907,9 +918,10 @@ def validate_and_rescale_layer(
         'warning': None
     }
 
-    # Copy array and profile for output
-    array_out = array.copy()
+    # Copy array_work (already masked) as the output base — not the raw array
+    array_out = array_work.astype(np.float32)
     profile_out = profile.copy()
+    profile_out['dtype'] = 'float32'
 
     # ===================================================================
     # CONTINUOUS [0-1] LAYERS

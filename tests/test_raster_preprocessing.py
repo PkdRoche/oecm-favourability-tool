@@ -715,17 +715,18 @@ def test_validate_rescales_arbitrary_range():
     # Should rescale
     assert report['rescaled'] is True
     assert report['method'] == 'linear_rescale'
+    # original_min/max recorded BEFORE negative masking
     assert report['original_min'] == -5.0
     assert report['original_max'] == 200.0
 
-    # Output should be in [0, 1]
+    # Negative value (-5) must be NaN in output (masked as NoData)
+    assert np.isnan(array_out[0, 0])
+
+    # Output valid values should be in [0, 1]
     valid_values = array_out[~np.isnan(array_out)]
     assert np.all(valid_values >= 0.0)
     assert np.all(valid_values <= 1.0)
 
-    # Check min and max rescaled correctly
-    # Min value (-5) should map to 0.0
-    assert np.isclose(array_out[0, 0], 0.0)
     # Max value (200) should map to 1.0
     assert np.isclose(array_out[1, 1], 1.0)
 
@@ -770,9 +771,9 @@ def test_validate_pressure_warns_if_normalised():
 
 def test_validate_landuse_warns_if_float():
     """Test validate_and_rescale_layer warns for float land use values."""
-    # Create test array with float values in [0, 1]
+    # Create test array with float values in (0, 1] — avoid 0.0 which is CLC NoData sentinel
     test_array = np.array([
-        [0.0, 0.3, 0.5],
+        [0.1, 0.3, 0.5],
         [0.7, 0.9, 1.0],
         [np.nan, 0.4, 0.6]
     ], dtype=np.float64)
