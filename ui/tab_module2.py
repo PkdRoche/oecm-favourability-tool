@@ -35,7 +35,39 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
     """
     st.header("Module 2 — OECM Favourability Analysis")
 
-    # Check if data is available
+    # ===================================================================
+    # Check if data has been uploaded
+    # ===================================================================
+    data_ready_module2 = st.session_state.get('data_ready_module2', False)
+
+    if not data_ready_module2:
+        st.info(
+            "Please upload your input data in the **① Data Upload** tab first."
+        )
+        st.markdown(
+            """
+            Module 2 requires the following raster layers (all in EPSG:3035):
+
+            **Group A — Ecological Integrity:**
+            - Ecosystem condition [0-1]
+            - Regulating ES capacity [0-1]
+            - Anthropogenic pressure (hab/km²)
+
+            **Group B — Co-benefits:**
+            - Cultural ES capacity [0-1]
+
+            **Group C — Production Function:**
+            - Provisioning ES capacity [0-1]
+            - Land use / land cover (categorical)
+
+            Navigate to the **① Data Upload** tab to upload these layers.
+            """
+        )
+        return
+
+    # ===================================================================
+    # Check if analysis has been run
+    # ===================================================================
     if score_array is None:
         st.info(
             "Upload raster criteria layers and configure weights in the sidebar "
