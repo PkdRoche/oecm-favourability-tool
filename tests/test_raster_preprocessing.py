@@ -9,6 +9,7 @@ import pytest
 import numpy as np
 import rasterio
 from pathlib import Path
+from shapely.geometry import box
 
 # Import functions to test
 import sys
@@ -23,7 +24,8 @@ from modules.module2_favourability.raster_preprocessing import (
     normalize_linear,
     normalize_sigmoid,
     normalize_gaussian,
-    normalize_layer
+    normalize_layer,
+    derive_grid_from_geometry
 )
 
 
@@ -464,6 +466,144 @@ def test_resample_raster_changes_resolution():
 
     assert abs(resampled_profile['width'] - expected_width) <= 1
     assert abs(resampled_profile['height'] - expected_height) <= 1
+
+
+def test_derive_grid_from_geometry():
+    """Test that derive_grid_from_geometry produces correct grid parameters."""
+    # Create a test geometry (100km x 100km square in EPSG:3035 coordinates)
+    # Center around arbitrary European coordinates
+    minx, miny = 4000000, 3000000
+    maxx, maxy = 4100000, 3100000
+    test_geom = box(minx, miny, maxx, maxy)
+
+    resolution = 100.0
+    profile = derive_grid_from_geometry(test_geom, resolution=resolution, crs="EPSG:3035")
+
+    # Check basic properties
+    assert profile['crs'] == "EPSG:3035"
+    assert profile['width'] == 1000  # 100km / 100m
+    assert profile['height'] == 1000
+    assert profile['dtype'] == 'float64'
+    assert profile['count'] == 1
+
+    # Check transform resolution
+    transform = profile['transform']
+    assert abs(transform[0]) == resolution  # pixel width
+    assert abs(transform[4]) == resolution  # pixel height (negative)
+
+    # Check bounds alignment (should snap to grid)
+    bounds_minx = transform[2]
+    bounds_maxy = transform[5]
+    assert bounds_minx % resolution == 0  # Aligned to grid
+    assert bounds_maxy % resolution == 0
+
+
+def test_align_rasters_with_nuts2_geometry():
+    """Test that align_rasters with geometry produces grid matching derived grid."""
+    # Load test rasters
+    paths = {
+        "ecosystem_condition": str(SYNTHETIC_DATA_DIR / "ecosystem_condition.tif"),
+        "regulating_es": str(SYNTHETIC_DATA_DIR / "regulating_es.tif"),
+        "cultural_es": str(SYNTHETIC_DATA_DIR / "cultural_es.tif")
+    }
+
+    raster_dict = {}
+    for name, path in paths.items():
+        array, profile = load_raster(path)
+        raster_dict[name] = (array, profile)
+
+    # Create a study area geometry that covers part of the raster extent
+    # Get bounds from first raster
+    first_array, first_profile = list(raster_dict.values())[0]
+    first_bounds = rasterio.transform.array_bounds(
+        first_profile['height'],
+        first_profile['width'],
+        first_profile['transform']
+    )
+
+    # Create geometry covering central 80% of first raster
+    margin = 0.1
+    width = first_bounds[2] - first_bounds[0]
+    height = first_bounds[3] - first_bounds[1]
+    study_minx = first_bounds[0] + width * margin
+    study_miny = first_bounds[1] + height * margin
+    study_maxx = first_bounds[2] - width * margin
+    study_maxy = first_bounds[3] - height * margin
+    study_area_geom = box(study_minx, study_miny, study_maxx, study_maxy)
+
+    resolution = 100.0
+    crs = "EPSG:3035"
+
+    # Align with study area geometry
+    aligned = align_rasters(
+        raster_dict,
+        study_area_geom=study_area_geom,
+        resolution=resolution,
+        crs=crs
+    )
+
+    # Derive expected grid
+    expected_profile = derive_grid_from_geometry(study_area_geom, resolution=resolution, crs=crs)
+
+    # Check all aligned rasters match expected grid
+    for name, (array, profile) in aligned.items():
+        assert profile['width'] == expected_profile['width'], f"{name} width mismatch"
+        assert profile['height'] == expected_profile['height'], f"{name} height mismatch"
+        assert profile['crs'] == expected_profile['crs'], f"{name} CRS mismatch"
+
+        # Check transform matches (within floating point tolerance)
+        for i in range(6):
+            assert np.isclose(profile['transform'][i], expected_profile['transform'][i]), \
+                f"{name} transform[{i}] mismatch"
+
+        # Check array shape matches profile
+        assert array.shape == (profile['height'], profile['width']), f"{name} array shape mismatch"
+
+
+def test_align_rasters_warns_on_low_coverage(caplog):
+    """Test that align_rasters logs warning when layer covers <80% of study area."""
+    import logging
+
+    # Load a test raster
+    path = str(SYNTHETIC_DATA_DIR / "ecosystem_condition.tif")
+    array, profile = load_raster(path)
+
+    # Create a study area geometry much larger than the raster
+    # This will cause low coverage
+    raster_bounds = rasterio.transform.array_bounds(
+        profile['height'],
+        profile['width'],
+        profile['transform']
+    )
+
+    # Create study area 3x larger than raster
+    center_x = (raster_bounds[0] + raster_bounds[2]) / 2
+    center_y = (raster_bounds[1] + raster_bounds[3]) / 2
+    width = (raster_bounds[2] - raster_bounds[0]) * 3
+    height = (raster_bounds[3] - raster_bounds[1]) * 3
+
+    large_study_area = box(
+        center_x - width / 2,
+        center_y - height / 2,
+        center_x + width / 2,
+        center_y + height / 2
+    )
+
+    raster_dict = {"test_layer": (array, profile)}
+
+    # Set logging level to capture warnings
+    with caplog.at_level(logging.WARNING):
+        aligned = align_rasters(
+            raster_dict,
+            study_area_geom=large_study_area,
+            resolution=100.0,
+            crs="EPSG:3035"
+        )
+
+    # Check that warning was logged
+    warning_messages = [record.message for record in caplog.records if record.levelname == "WARNING"]
+    assert any("covers only" in msg and "80%" in msg for msg in warning_messages), \
+        "Expected low coverage warning not found in logs"
 
 
 if __name__ == "__main__":

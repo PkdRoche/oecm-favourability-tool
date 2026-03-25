@@ -79,6 +79,10 @@ with st.sidebar:
 # Store parameters in session state for access across tabs
 st.session_state['parameters'] = parameters
 
+# Store study area geometry separately for Module 1 compatibility
+if 'study_area_geometry' in parameters:
+    st.session_state['territory_geom'] = parameters['study_area_geometry']
+
 # Log current parameters (DEBUG level)
 logger.debug(f"Current parameters: {parameters}")
 
@@ -178,6 +182,19 @@ with tab3:
 
             with st.spinner("Aligning rasters to common grid..."):
                 try:
+                    # Load settings for resolution and CRS
+                    import yaml
+                    from pathlib import Path
+                    settings_path = Path(__file__).parent / "config" / "settings.yaml"
+                    with open(settings_path, 'r') as f:
+                        settings = yaml.safe_load(f)
+
+                    target_resolution = settings.get('resolution_m', 100.0)
+                    target_crs = settings.get('crs', 'EPSG:3035')
+
+                    # Get study area geometry from parameters
+                    study_area_geom = parameters.get('study_area_geometry')
+
                     # Align all rasters
                     raster_dict = {
                         'ecosystem_condition': (eco_array, eco_profile),
@@ -188,7 +205,13 @@ with tab3:
                         'landuse': (landuse_array, landuse_profile)
                     }
 
-                    aligned = raster_preprocessing.align_rasters(raster_dict)
+                    # Align using study area geometry as reference grid
+                    aligned = raster_preprocessing.align_rasters(
+                        raster_dict,
+                        study_area_geom=study_area_geom,
+                        resolution=target_resolution,
+                        crs=target_crs
+                    )
 
                     # Extract aligned arrays
                     eco_aligned = aligned['ecosystem_condition'][0]

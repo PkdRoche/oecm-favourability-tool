@@ -9,9 +9,12 @@ import numpy as np
 import rasterio
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 from rasterio.transform import from_bounds
+from rasterio.mask import mask as rasterio_mask
 import yaml
 from pathlib import Path
 from typing import Optional
+from shapely.geometry import mapping
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -263,18 +266,93 @@ def resample_raster(
     return dst_array, dst_profile
 
 
+def derive_grid_from_geometry(geom, resolution=100.0, crs="EPSG:3035") -> dict:
+    """Derive a rasterio profile (transform, width, height, crs) from a shapely geometry.
+
+    Parameters
+    ----------
+    geom : shapely.geometry
+        Shapely geometry in the target CRS (typically NUTS2 boundary).
+    resolution : float, optional
+        Target grid resolution in units of the CRS (typically meters).
+        Default is 100.0.
+    crs : str, optional
+        Target coordinate reference system. Default is 'EPSG:3035'.
+
+    Returns
+    -------
+    dict
+        Rasterio profile dictionary containing:
+        - 'crs': Target CRS
+        - 'transform': Affine transform for the grid
+        - 'width': Grid width in pixels
+        - 'height': Grid height in pixels
+        - 'dtype': Data type (float64)
+        - 'count': Number of bands (1)
+
+    Notes
+    -----
+    Grid bounds are snapped to clean multiples of the resolution to ensure
+    alignment with standard grid systems.
+    """
+    logger.info(f"Deriving grid from geometry: resolution={resolution}m, CRS={crs}")
+
+    bounds = geom.bounds  # (minx, miny, maxx, maxy)
+
+    # Snap bounds to clean grid multiples
+    minx = math.floor(bounds[0] / resolution) * resolution
+    miny = math.floor(bounds[1] / resolution) * resolution
+    maxx = math.ceil(bounds[2] / resolution) * resolution
+    maxy = math.ceil(bounds[3] / resolution) * resolution
+
+    # Calculate dimensions
+    width = int((maxx - minx) / resolution)
+    height = int((maxy - miny) / resolution)
+
+    # Create transform
+    transform = from_bounds(minx, miny, maxx, maxy, width, height)
+
+    profile = {
+        'crs': crs,
+        'transform': transform,
+        'width': width,
+        'height': height,
+        'dtype': 'float64',
+        'count': 1
+    }
+
+    logger.info(f"Derived grid: {width}x{height} pixels, bounds=({minx}, {miny}, {maxx}, {maxy})")
+    return profile
+
+
 def align_rasters(
-    raster_dict: dict[str, tuple[np.ndarray, dict]]
+    raster_dict: dict[str, tuple[np.ndarray, dict]],
+    study_area_geom=None,
+    resolution: float = 100.0,
+    crs: str = "EPSG:3035"
 ) -> dict[str, tuple[np.ndarray, dict]]:
     """Align all rasters to a common grid (extent, resolution, CRS).
 
-    The reference grid is determined by the first layer after sorting by name.
-    All other layers are reprojected and resampled to match this reference.
+    When study_area_geom is provided, the reference grid is derived from the
+    NUTS2 study area geometry bounds. All layers are clipped to the study area
+    before alignment. This ensures all outputs are masked to the analysis extent.
+
+    When study_area_geom is None (backward compatibility), the first layer after
+    sorting by name is used as the reference grid.
 
     Parameters
     ----------
     raster_dict : dict[str, tuple[np.ndarray, dict]]
         Dictionary mapping layer names to (array, profile) tuples.
+    study_area_geom : shapely.geometry, optional
+        Study area geometry (typically NUTS2 boundary) in target CRS.
+        If provided, this defines the reference grid extent. Default is None.
+    resolution : float, optional
+        Target resolution in units of the CRS (typically meters).
+        Only used when study_area_geom is provided. Default is 100.0.
+    crs : str, optional
+        Target coordinate reference system. Only used when study_area_geom
+        is provided. Default is 'EPSG:3035'.
 
     Returns
     -------
@@ -285,67 +363,187 @@ def align_rasters(
     ------
     ValueError
         If raster_dict is empty or contains incompatible grids.
+
+    Warnings
+    --------
+    Logs a warning if a layer covers less than 80% of the study area grid cells.
+
+    Notes
+    -----
+    - When study_area_geom is provided:
+      - Uses nearest-neighbor resampling for integer/categorical layers
+      - Uses bilinear resampling for float layers
+      - Fills NoData with np.nan for float output (not 0)
+      - Clips each layer to study area before alignment
+    - When study_area_geom is None:
+      - Legacy behavior: uses first sorted layer as reference
+      - Logs deprecation warning
     """
     logger.info(f"Aligning {len(raster_dict)} rasters to common grid")
 
     if not raster_dict:
         raise ValueError("Cannot align empty raster dictionary")
 
-    # Sort by name and use first as reference
-    sorted_names = sorted(raster_dict.keys())
-    reference_name = sorted_names[0]
-    ref_array, ref_profile = raster_dict[reference_name]
+    # ===================================================================
+    # Case 1: study_area_geom provided — derive grid from geometry
+    # ===================================================================
+    if study_area_geom is not None:
+        logger.info("Using study area geometry to derive reference grid")
 
-    logger.info(f"Using '{reference_name}' as reference grid")
-    logger.info(f"Reference: shape={ref_array.shape}, CRS={ref_profile['crs']}, "
-                f"transform={ref_profile['transform']}")
+        # Derive reference grid from geometry
+        ref_profile = derive_grid_from_geometry(geom=study_area_geom, resolution=resolution, crs=crs)
 
-    aligned = {}
-    aligned[reference_name] = (ref_array.copy(), ref_profile.copy())
+        aligned = {}
 
-    # Get reference bounds
-    ref_bounds = rasterio.transform.array_bounds(
-        ref_profile['height'],
-        ref_profile['width'],
-        ref_profile['transform']
-    )
+        for name, (src_array, src_profile) in raster_dict.items():
+            logger.info(f"Clipping and aligning '{name}' to study area grid")
 
-    # Align all other rasters to reference
-    for name in sorted_names[1:]:
-        src_array, src_profile = raster_dict[name]
-        logger.info(f"Aligning '{name}' to reference grid")
+            # Determine resampling method based on dtype
+            is_categorical = np.issubdtype(src_array.dtype, np.integer)
+            resampling_method = Resampling.nearest if is_categorical else Resampling.bilinear
 
-        # Create destination array matching reference
-        dst_array = np.empty(
-            (ref_profile['height'], ref_profile['width']),
-            dtype=src_array.dtype
+            logger.info(f"  dtype={src_array.dtype}, resampling={resampling_method.name}")
+
+            # Create destination array
+            # Use float64 for output to support np.nan
+            dst_dtype = src_array.dtype if is_categorical else np.float64
+            dst_array = np.full(
+                (ref_profile['height'], ref_profile['width']),
+                fill_value=np.nan if not is_categorical else 0,
+                dtype=dst_dtype
+            )
+
+            # Reproject and resample to reference grid
+            reproject(
+                source=src_array,
+                destination=dst_array,
+                src_transform=src_profile['transform'],
+                src_crs=src_profile['crs'],
+                dst_transform=ref_profile['transform'],
+                dst_crs=ref_profile['crs'],
+                resampling=resampling_method,
+                dst_nodata=np.nan if not is_categorical else 0
+            )
+
+            # Apply study area mask (clip to geometry)
+            # Create a temporary in-memory dataset for masking
+            with rasterio.io.MemoryFile() as memfile:
+                with memfile.open(
+                    driver='GTiff',
+                    height=ref_profile['height'],
+                    width=ref_profile['width'],
+                    count=1,
+                    dtype=dst_dtype,
+                    crs=ref_profile['crs'],
+                    transform=ref_profile['transform']
+                ) as dataset:
+                    dataset.write(dst_array, 1)
+
+                    # Apply mask using geometry
+                    try:
+                        masked_array, masked_transform = rasterio_mask(
+                            dataset,
+                            [mapping(study_area_geom)],
+                            crop=False,  # Don't crop, just mask
+                            filled=True,
+                            nodata=np.nan if not is_categorical else 0
+                        )
+
+                        dst_array = masked_array[0]  # Extract first band
+
+                    except Exception as e:
+                        logger.warning(f"Failed to mask '{name}' to study area: {e}. Using unmasked data.")
+
+            # Check coverage (warn if < 80%)
+            if not is_categorical:
+                valid_count = np.sum(~np.isnan(dst_array))
+            else:
+                valid_count = np.sum(dst_array != 0)
+
+            total_count = dst_array.size
+            coverage = valid_count / total_count if total_count > 0 else 0
+
+            if coverage < 0.80:
+                logger.warning(
+                    f"Layer '{name}' covers only {coverage*100:.1f}% of the study area grid. "
+                    f"Expected coverage ≥80%. Check layer extent."
+                )
+
+            # Create aligned profile
+            dst_profile = ref_profile.copy()
+            dst_profile['dtype'] = str(dst_dtype)
+
+            aligned[name] = (dst_array, dst_profile)
+            logger.info(f"Aligned '{name}' to shape {dst_array.shape}, coverage={coverage*100:.1f}%")
+
+        logger.info("All rasters aligned to study area grid")
+        return aligned
+
+    # ===================================================================
+    # Case 2: No study_area_geom — legacy behavior (alphabetical reference)
+    # ===================================================================
+    else:
+        logger.warning(
+            "align_rasters() called without study_area_geom. "
+            "Using legacy behavior (first sorted layer as reference). "
+            "This is deprecated — please provide study_area_geom for correct grid alignment."
         )
 
-        # Reproject to match reference
-        reproject(
-            source=src_array,
-            destination=dst_array,
-            src_transform=src_profile['transform'],
-            src_crs=src_profile['crs'],
-            dst_transform=ref_profile['transform'],
-            dst_crs=ref_profile['crs'],
-            resampling=Resampling.bilinear
+        # Sort by name and use first as reference
+        sorted_names = sorted(raster_dict.keys())
+        reference_name = sorted_names[0]
+        ref_array, ref_profile = raster_dict[reference_name]
+
+        logger.info(f"Using '{reference_name}' as reference grid")
+        logger.info(f"Reference: shape={ref_array.shape}, CRS={ref_profile['crs']}, "
+                    f"transform={ref_profile['transform']}")
+
+        aligned = {}
+        aligned[reference_name] = (ref_array.copy(), ref_profile.copy())
+
+        # Get reference bounds
+        ref_bounds = rasterio.transform.array_bounds(
+            ref_profile['height'],
+            ref_profile['width'],
+            ref_profile['transform']
         )
 
-        # Create aligned profile
-        dst_profile = src_profile.copy()
-        dst_profile.update({
-            'crs': ref_profile['crs'],
-            'transform': ref_profile['transform'],
-            'width': ref_profile['width'],
-            'height': ref_profile['height']
-        })
+        # Align all other rasters to reference
+        for name in sorted_names[1:]:
+            src_array, src_profile = raster_dict[name]
+            logger.info(f"Aligning '{name}' to reference grid")
 
-        aligned[name] = (dst_array, dst_profile)
-        logger.info(f"Aligned '{name}' to shape {dst_array.shape}")
+            # Create destination array matching reference
+            dst_array = np.empty(
+                (ref_profile['height'], ref_profile['width']),
+                dtype=src_array.dtype
+            )
 
-    logger.info("All rasters aligned to common grid")
-    return aligned
+            # Reproject to match reference
+            reproject(
+                source=src_array,
+                destination=dst_array,
+                src_transform=src_profile['transform'],
+                src_crs=src_profile['crs'],
+                dst_transform=ref_profile['transform'],
+                dst_crs=ref_profile['crs'],
+                resampling=Resampling.bilinear
+            )
+
+            # Create aligned profile
+            dst_profile = src_profile.copy()
+            dst_profile.update({
+                'crs': ref_profile['crs'],
+                'transform': ref_profile['transform'],
+                'width': ref_profile['width'],
+                'height': ref_profile['height']
+            })
+
+            aligned[name] = (dst_array, dst_profile)
+            logger.info(f"Aligned '{name}' to shape {dst_array.shape}")
+
+        logger.info("All rasters aligned to common grid")
+        return aligned
 
 
 def apply_nodata_mask(
