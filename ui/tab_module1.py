@@ -503,7 +503,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
 
         if len(gap_layers['qualitative_gaps']) > 0:
             folium.GeoJson(
-                gap_layers['qualitative_gaps'],
+                gap_layers['qualitative_gaps'].to_crs('EPSG:4326') if hasattr(gap_layers['qualitative_gaps'], 'to_crs') else gap_layers['qualitative_gaps'],
                 name='Qualitative Gaps',
                 style_function=lambda x: {
                     'fillColor': '#F6A623',
@@ -515,7 +515,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
 
         if len(gap_layers['corridors']) > 0:
             folium.GeoJson(
-                gap_layers['corridors'],
+                gap_layers['corridors'].to_crs('EPSG:4326') if hasattr(gap_layers['corridors'], 'to_crs') else gap_layers['corridors'],
                 name='Potential Corridors',
                 style_function=lambda x: {
                     'fillColor': '#4A90E2',
