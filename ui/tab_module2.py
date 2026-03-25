@@ -41,7 +41,9 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
     # ===================================================================
     st.subheader("Favourability Summary")
 
-    pixel_area_ha = (profile['transform'][0] ** 2) / 10000.0
+    # Use |pixel_width| × |pixel_height| to support non-square pixels.
+    # transform[0] = pixel width (x), transform[4] = pixel height (y, typically negative).
+    pixel_area_ha = (abs(profile['transform'][0]) * abs(profile['transform'][4])) / 10000.0
     territory_area_ha = profile['width'] * profile['height'] * pixel_area_ha
 
     valid_mask = ~np.isnan(score_array)

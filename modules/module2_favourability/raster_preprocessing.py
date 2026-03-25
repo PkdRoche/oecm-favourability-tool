@@ -84,7 +84,8 @@ def load_raster(path: str) -> tuple[np.ndarray, dict]:
 def reproject_raster(
     array: np.ndarray,
     src_profile: dict,
-    target_crs: str
+    target_crs: str,
+    categorical: bool = False
 ) -> tuple[np.ndarray, dict]:
     """Reproject raster to target CRS using rasterio.warp.
 
@@ -143,7 +144,8 @@ def reproject_raster(
     # Create destination array
     dst_array = np.empty((height, width), dtype=array.dtype)
 
-    # Reproject
+    # Reproject — use nearest neighbour for categorical layers (e.g. CLC land use)
+    _resampling = Resampling.nearest if categorical else Resampling.bilinear
     reproject(
         source=array,
         destination=dst_array,
@@ -151,7 +153,7 @@ def reproject_raster(
         src_crs=src_profile['crs'],
         dst_transform=transform,
         dst_crs=target_crs,
-        resampling=Resampling.bilinear
+        resampling=_resampling
     )
 
     # Update profile
@@ -406,8 +408,11 @@ def align_rasters(
         for name, (src_array, src_profile) in raster_dict.items():
             logger.info(f"Clipping and aligning '{name}' to study area grid")
 
-            # Determine resampling method based on dtype
-            is_categorical = np.issubdtype(src_array.dtype, np.integer)
+            # Determine resampling method.
+            # 'landuse' is always categorical regardless of stored dtype:
+            # validate_and_rescale_layer saves CLC as float32 (NaN support required),
+            # so dtype-based detection would incorrectly choose bilinear, corrupting codes.
+            is_categorical = (name == 'landuse') or np.issubdtype(src_array.dtype, np.integer)
             resampling_method = Resampling.nearest if is_categorical else Resampling.bilinear
 
             logger.info(f"  dtype={src_array.dtype}, resampling={resampling_method.name}")
@@ -780,8 +785,12 @@ def normalize_layer(
 
     elif transform_type == 'inverted_linear':
         # For inverted linear, derive vmin/vmax from data if not provided
-        vmin = params.get('vmin', np.nanmin(array))
-        vmax = params.get('vmax', np.nanmax(array))
+        if not np.any(~np.isnan(array)):
+            raise ValueError(
+                f"Layer '{layer_name}': all values are NaN — cannot derive vmin/vmax for inverted_linear"
+            )
+        vmin = params.get('vmin', float(np.nanmin(array)))
+        vmax = params.get('vmax', float(np.nanmax(array)))
         logger.info(f"Inverted linear: using vmin={vmin}, vmax={vmax}")
         return normalize_linear(array, vmin=vmin, vmax=vmax, invert=True)
 
