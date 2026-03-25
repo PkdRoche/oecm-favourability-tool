@@ -116,8 +116,10 @@ def render():
     """
     st.header("Input Data Upload")
     st.markdown(
-        "Provide local file paths to all required layers before running the analysis. "
-        "**All rasters must be in EPSG:3035** (LAEA Europe) with consistent resolution."
+        """
+        Upload all required layers before running the analysis.
+        **All rasters must be in EPSG:3035** (LAEA Europe) with consistent resolution.
+        """
     )
 
     # Define required layers (used throughout the render function)
@@ -167,8 +169,10 @@ def render():
     # ===================================================================
     st.subheader("Multi-Criteria Evaluation Layers")
     st.markdown(
-        "Provide the local file path for each criterion raster (GeoTIFF, EPSG:3035). "
-        "Large files such as Corine Land Cover (>600 MB) are supported — no upload size limit."
+        """
+        Upload the six criterion rasters (GeoTIFF, EPSG:3035).
+        Files up to **2 GB** are supported — including Corine Land Cover.
+        """
     )
 
     # Initialize session state dicts
@@ -177,22 +181,21 @@ def render():
     if 'validation_reports' not in st.session_state:
         st.session_state['validation_reports'] = {}
 
-    # Helper: render one path input and update session state
-    def _layer_path_input(criterion_key, label, placeholder, help_text):
-        path = st.text_input(
+    # Helper: render one file uploader and update session state
+    def _layer_uploader(criterion_key, label, help_text):
+        uploaded = st.file_uploader(
             label,
-            key=f'{criterion_key}_path',
-            placeholder=placeholder,
+            type=['tif', 'tiff'],
+            key=f'{criterion_key}_upload',
             help=help_text,
         )
-        if path and Path(path).is_file():
-            st.session_state['criterion_raster_paths'][criterion_key] = path
-            st.caption(f"✅ {Path(path).name}")
-            _validate_layer(criterion_key, path)
-        elif path:
-            st.caption("❌ File not found — check the path.")
-            st.session_state['criterion_raster_paths'].pop(criterion_key, None)
-            st.session_state['validation_reports'].pop(criterion_key, None)
+        if uploaded is not None:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
+                tmp.write(uploaded.read())
+                tmp.flush()
+                st.session_state['criterion_raster_paths'][criterion_key] = tmp.name
+                logger.info(f"{criterion_key} uploaded: {tmp.name}")
+                _validate_layer(criterion_key, tmp.name)
         else:
             st.session_state['criterion_raster_paths'].pop(criterion_key, None)
             st.session_state['validation_reports'].pop(criterion_key, None)
@@ -201,40 +204,34 @@ def render():
 
     with col_left:
         st.markdown("#### Group A — Ecological Integrity")
-        _layer_path_input(
+        _layer_uploader(
             'ecosystem_condition', "Ecosystem condition [0–1]",
-            r"C:\data\ecosystem_condition.tif",
             "Normalised ecosystem condition index (0 = degraded, 1 = pristine)."
         )
-        _layer_path_input(
+        _layer_uploader(
             'regulating_es', "Regulating ES capacity [0–1]",
-            r"C:\data\regulating_es.tif",
             "Regulating ecosystem services capacity (e.g. carbon storage, water regulation)."
         )
-        _layer_path_input(
+        _layer_uploader(
             'anthropogenic_pressure', "Anthropogenic pressure (hab/km²)",
-            r"C:\data\anthropogenic_pressure.tif",
             "Human population density or composite anthropogenic pressure index. Raw values accepted."
         )
 
     with col_right:
         st.markdown("#### Group B — Co-benefits")
-        _layer_path_input(
+        _layer_uploader(
             'cultural_es', "Cultural ES capacity [0–1]",
-            r"C:\data\cultural_es.tif",
             "Cultural ecosystem services capacity (e.g. recreation, landscape aesthetics)."
         )
         st.markdown("#### Group C — Production Function")
-        _layer_path_input(
+        _layer_uploader(
             'provisioning_es', "Provisioning ES capacity [0–1]",
-            r"C:\data\provisioning_es.tif",
             "Provisioning ecosystem services capacity (e.g. food, timber, water supply)."
         )
-        _layer_path_input(
+        _layer_uploader(
             'landuse', "Land use / land cover — CLC 2018 (categorical)",
-            r"C:\data\CLC2018_CLC2018_V2018_20.tif",
-            "Corine Land Cover 2018 GeoTIFF. Download free from "
-            "https://land.copernicus.eu/pan-european/corine-land-cover"
+            "Corine Land Cover 2018 GeoTIFF (up to 2 GB supported). "
+            "Download free from https://land.copernicus.eu/pan-european/corine-land-cover"
         )
 
     st.markdown("---")
