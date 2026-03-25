@@ -478,36 +478,29 @@ def compute_favourability(
         std=prov_params['std']
     )
 
-    # Anthropogenic pressure - inverted linear for eligible pixels
-    # First mask out high pressure areas
+    # Anthropogenic pressure - inverted linear, normalised against [0, threshold_pressure].
+    # Reference range is FIXED to [0, max_pressure]:
+    #   pressure = 0           → score 1.0 (no pressure, always)
+    #   pressure = max_pressure → score 0.0 (at the eliminatory limit, always)
+    # Using the runtime eligible range [p_min, p_max] would make the score non-stationary:
+    # the same pixel would receive a different score if the threshold is changed, because
+    # the eligible population changes and therefore p_max changes. A fixed reference
+    # ensures that pressure scores are comparable across different threshold settings.
     pressure_for_score = anthropogenic_pressure.copy().astype(np.float64)
     pressure_for_score[~eliminatory_mask] = np.nan  # Exclude eliminated pixels
 
-    # Apply inverted linear normalisation
-    # Handle edge case where all valid pressure values are the same
     valid_pressure = pressure_for_score[~np.isnan(pressure_for_score)]
     if len(valid_pressure) > 0:
-        p_min = np.min(valid_pressure)
-        p_max = np.max(valid_pressure)
-        if np.isclose(p_min, p_max):
-            # All values are the same - assign score of 1.0 (low pressure = good)
-            # since they passed the eliminatory threshold
-            pressure_score = np.where(
-                np.isnan(pressure_for_score),
-                np.nan,
-                1.0
-            )
-        else:
-            pressure_params = transform_config['anthropogenic_pressure'].copy()
-            pressure_params['vmin'] = p_min
-            pressure_params['vmax'] = p_max
-            pressure_score = raster_preprocessing.normalize_layer(
-                pressure_for_score,
-                'anthropogenic_pressure',
-                pressure_params
-            )
+        pressure_params = transform_config['anthropogenic_pressure'].copy()
+        pressure_params['vmin'] = 0.0           # absolute minimum (no pressure)
+        pressure_params['vmax'] = float(max_pressure)  # threshold = upper limit of eligible range
+        pressure_score = raster_preprocessing.normalize_layer(
+            pressure_for_score,
+            'anthropogenic_pressure',
+            pressure_params
+        )
     else:
-        # No valid pressure values
+        # No valid pressure values (all pixels eliminated)
         pressure_score = np.full(pressure_for_score.shape, np.nan)
 
     # Recode land use for compatible classes
