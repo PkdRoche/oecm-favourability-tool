@@ -71,9 +71,13 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                     from modules.module1_protected_areas.wdpa_loader import (
                         load_wdpa_local, filter_to_extent, classify_iucn
                     )
+                    import yaml
+                    config_path = Path(__file__).parent.parent / "config" / "iucn_classification.yaml"
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        classification_table = yaml.safe_load(f)
                     gdf = load_wdpa_local(wdpa_file)
                     gdf = filter_to_extent(gdf, territory_geom)
-                    gdf = classify_iucn(gdf)
+                    gdf = classify_iucn(gdf, classification_table)
                     st.session_state['pa_gdf'] = gdf
                     st.rerun()
                 except Exception as e:
