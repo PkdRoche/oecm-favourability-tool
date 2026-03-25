@@ -668,14 +668,25 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                     # Propose weights
                     proposed_weights = propose_group_a_weights(ri_df, criterion_mapping)
 
-                    # Store in session state
-                    st.session_state['proposed_group_a_weights'] = proposed_weights
+                    # Validate handoff before storing
+                    from modules.module1_protected_areas.handoff import (
+                        validate_weight_handoff,
+                        format_weights_for_mce
+                    )
+
+                    validate_weight_handoff(proposed_weights, str(config_path))
+                    formatted_weights = format_weights_for_mce(proposed_weights)
+
+                    # Store validated weights in session state
+                    st.session_state['proposed_group_a_weights'] = formatted_weights
 
                     st.success(
-                        "Weight suggestions applied! "
+                        "Weight suggestions validated and applied! "
                         "Go to sidebar Section 7 to apply them to Module 2."
                     )
 
+                except ValueError as e:
+                    st.error(f"Weight validation failed: {str(e)}")
                 except Exception as e:
                     st.error(f"Failed to propose weights: {str(e)}")
         else:

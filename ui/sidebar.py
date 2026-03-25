@@ -482,15 +482,31 @@ def render_sidebar():
         ):
             proposed = st.session_state['proposed_group_a_weights']
 
-            # Update Group A weights
-            st.session_state['group_a_applied'] = {
-                'w_condition': proposed.get('ecosystem_condition', w_condition),
-                'w_regulating_es': proposed.get('regulating_es', w_regulating_es),
-                'w_pressure': proposed.get('low_pressure', w_pressure)
-            }
+            # Validate handoff before applying
+            try:
+                from modules.module1_protected_areas.handoff import (
+                    validate_weight_handoff,
+                    format_weights_for_mce
+                )
 
-            st.sidebar.success("Module 1 weights applied to Group A!")
-            st.rerun()
+                config_path = Path(__file__).parent.parent / "config" / "criteria_defaults.yaml"
+                validate_weight_handoff(proposed, str(config_path))
+                formatted_weights = format_weights_for_mce(proposed)
+
+                # Update Group A weights
+                st.session_state['group_a_applied'] = {
+                    'w_condition': formatted_weights.get('ecosystem_condition', w_condition),
+                    'w_regulating_es': formatted_weights.get('regulating_es', w_regulating_es),
+                    'w_pressure': formatted_weights.get('low_pressure', w_pressure)
+                }
+
+                st.sidebar.success("Module 1 weights validated and applied to Group A!")
+                st.rerun()
+
+            except ValueError as e:
+                st.sidebar.error(f"Weight validation failed: {e}")
+            except Exception as e:
+                st.sidebar.error(f"Unexpected error applying weights: {e}")
     else:
         st.sidebar.info(
             "Run Module 1 gap analysis first to receive weight suggestions "
