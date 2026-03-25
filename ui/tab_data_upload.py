@@ -176,13 +176,13 @@ def render():
         st.session_state.pop('pa_gdf', None)
 
     st.checkbox(
-        "Exclude marine protected areas (MARINE = 2)",
+        "Exclude marine protected areas (REALM = 'Marine')",
         value=st.session_state.get('exclude_marine_pa', True),
         key='exclude_marine_pa',
         on_change=_clear_pa_gdf,
         help=(
-            "Removes fully marine PAs (WDPA MARINE column = 2) from the analysis. "
-            "Coastal PAs (MARINE = 1) are kept. Change requires re-running the diagnostic."
+            "Removes fully marine PAs (WDPA REALM column = 'Marine') from the analysis. "
+            "Coastal and terrestrial PAs are kept. Change requires re-running the diagnostic."
         )
     )
 
