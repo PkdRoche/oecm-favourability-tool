@@ -61,10 +61,11 @@ def weighted_geometric_mean(
     Notes
     -----
     - NaN propagation: if any input criterion is NaN, output is NaN.
-    - Zero handling: if any input criterion is 0, output is 0 (log(0) handled
-      safely by returning 0 directly).
-    - This function is strictly non-compensatory: a zero criterion nullifies
-      the total score.
+    - Zero handling: exact 0 inputs are floored to 1e-9 before log-space
+      computation, driving the output very close to 0 without nullifying it.
+      Hard pixel elimination is handled upstream by the Group D mask.
+    - The function is strongly non-compensatory: a near-zero criterion pulls
+      the total score toward 0, but only Group D eliminates pixels entirely.
 
     Examples
     --------
@@ -105,38 +106,26 @@ def weighted_geometric_mean(
     arrays_float = [arr.astype(np.float64) for arr in arrays]
     weights_arr = np.array(weights, dtype=np.float64)
 
-    # Initialize result
-    result = np.ones(reference_shape, dtype=np.float64)
+    # Small floor to avoid log(0): a criterion value of 0 drives the score
+    # very close to 0 but does not nullify it completely.
+    # Hard elimination of pixels is Group D's responsibility, not the aggregator's.
+    EPS = 1e-9
 
-    # Build combined NaN mask and zero mask
+    # Build NaN mask (NaN propagates; exact zeros do NOT kill the output)
     nan_mask = np.zeros(reference_shape, dtype=bool)
-    zero_mask = np.zeros(reference_shape, dtype=bool)
-
     for arr in arrays_float:
         nan_mask |= np.isnan(arr)
-        zero_mask |= (arr == 0)
 
-    # Compute geometric mean in log-space for non-zero, non-NaN pixels
-    # First create a combined valid mask
-    valid_mask = ~nan_mask & ~zero_mask
+    valid_mask = ~nan_mask
 
+    # Compute weighted geometric mean in log-space for all non-NaN pixels
+    result = np.full(reference_shape, np.nan, dtype=np.float64)
     if np.any(valid_mask):
-        # Initialize log sum
         log_sum = np.zeros(reference_shape, dtype=np.float64)
-
         for arr, w in zip(arrays_float, weights_arr):
-            # Use np.where to safely compute log only for valid pixels
-            log_arr = np.where(valid_mask, np.log(np.maximum(arr, 1e-300)), 0.0)
-            log_sum += w * log_arr
-
-        # Compute result only for valid pixels
-        result = np.where(valid_mask, np.exp(log_sum), result)
-
-    # Set zeros where any input is zero
-    result[zero_mask] = 0.0
-
-    # Set NaN where any input is NaN
-    result[nan_mask] = np.nan
+            safe = np.where(valid_mask, np.maximum(arr, EPS), 1.0)
+            log_sum += w * np.where(valid_mask, np.log(safe), 0.0)
+        result = np.where(valid_mask, np.clip(np.exp(log_sum), 0.0, 1.0), np.nan)
 
     logger.info(f"Geometric mean complete. Range: [{np.nanmin(result):.4f}, {np.nanmax(result):.4f}]")
     return result

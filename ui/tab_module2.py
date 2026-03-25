@@ -116,9 +116,33 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
 
     with subtab1:
         # =================================================================
-        # MAP TAB: Favourability map + threshold explorer
+        # MAP TAB: Threshold explorer then map
         # =================================================================
         st.subheader("Favourability Map")
+
+        # Threshold slider FIRST so the map reflects the current value immediately
+        threshold_col1, threshold_col2 = st.columns([2, 1])
+        with threshold_col1:
+            map_threshold = st.slider(
+                "Display threshold — show areas ≥",
+                min_value=0.0,
+                max_value=1.0,
+                value=st.session_state.get('export_threshold', 0.5),
+                step=0.05,
+                key='map_threshold_slider',
+                help="Only pixels with favourability score ≥ this value are shown on the map"
+            )
+            st.session_state['export_threshold'] = map_threshold
+
+        with threshold_col2:
+            above_threshold = valid_mask & (score_array >= map_threshold)
+            area_above_ha = np.sum(above_threshold) * pixel_area_ha
+            pct_above = (area_above_ha / territory_area_ha * 100.0) if territory_area_ha > 0 else 0.0
+            st.metric(
+                label=f"Area ≥ {map_threshold:.2f}",
+                value=f"{area_above_ha:,.0f} ha",
+                delta=f"{pct_above:.1f}% of study area"
+            )
 
         # Create folium map with raster overlay
         if n_valid == 0:
@@ -130,18 +154,17 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
 
         try:
             # Convert score_array to PNG using RdYlGn colormap
-            # Use matplotlib to create RGBA image
             import matplotlib.cm as mcm
             from rasterio.warp import transform_bounds
 
-            # Create colormap (RdYlGn: red=0, yellow=0.5, green=1)
             cmap = mcm.get_cmap('RdYlGn')
             norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
 
-            # Convert favourability scores to RGBA (valid_mask defined at function scope)
+            # Show only pixels at or above the map threshold — others are transparent
+            display_mask = valid_mask & (score_array >= map_threshold)
             rgba = np.zeros((*score_array.shape, 4), dtype=np.uint8)
-            rgba[valid_mask] = (cmap(norm(score_array[valid_mask])) * 255).astype(np.uint8)
-            rgba[~valid_mask, 3] = 0  # transparent for eliminated / NoData pixels
+            rgba[display_mask] = (cmap(norm(score_array[display_mask])) * 255).astype(np.uint8)
+            # Pixels below threshold and eliminated pixels stay fully transparent (alpha=0)
 
             # Convert to PIL Image
             img_pil = Image.fromarray(rgba, mode='RGBA')
@@ -254,40 +277,6 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
             st.error(f"Map rendering failed: {str(e)}")
             st.info("Export GeoTIFF for visualization in QGIS.")
 
-        st.markdown("---")
-
-        # =================================================================
-        # Threshold explorer
-        # =================================================================
-        st.markdown("#### Threshold Explorer")
-
-        threshold_col1, threshold_col2 = st.columns([2, 1])
-
-        with threshold_col1:
-            # Threshold slider
-            threshold = st.slider(
-                "Favourability threshold",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.5,
-                step=0.05,
-                help="Adjust threshold to explore area above different favourability levels"
-            )
-
-            # Store in session state
-            st.session_state['export_threshold'] = threshold
-
-        with threshold_col2:
-            # Compute area above threshold (only non-NaN pixels)
-            above_threshold = valid_mask & (score_array >= threshold)
-            area_above_ha = np.sum(above_threshold) * pixel_area_ha
-            pct_above = (area_above_ha / territory_area_ha * 100.0) if territory_area_ha > 0 else 0.0
-
-            st.metric(
-                label=f"Area ≥ {threshold:.2f}",
-                value=f"{area_above_ha:,.0f} ha",
-                delta=f"{pct_above:.1f}% of study area"
-            )
 
     with subtab2:
         # =================================================================
