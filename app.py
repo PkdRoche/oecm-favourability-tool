@@ -26,7 +26,7 @@ st.markdown(
     <style>
     .stTabs [data-baseweb="tab-list"] { gap: 12px; }
     .stTabs [data-baseweb="tab"] {
-        font-size: 1.25rem;
+        font-size: 1.05rem;
         font-weight: 700;
         padding: 12px 28px;
     }
