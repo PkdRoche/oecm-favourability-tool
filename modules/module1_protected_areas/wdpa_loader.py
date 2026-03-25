@@ -148,6 +148,10 @@ def load_wdpa_local(path: str) -> gpd.GeoDataFrame:
 
     logger.info(f"Loading WDPA from local file: {path}")
 
+    # Allow GDAL to reconstruct a missing .shx for shapefiles uploaded via browser
+    import os
+    os.environ.setdefault('SHAPE_RESTORE_SHX', 'YES')
+
     # Handle GDB format (may require layer specification)
     if path.endswith('.gdb'):
         # Try to read first layer, or specify layer name

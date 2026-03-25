@@ -144,26 +144,53 @@ def render():
     # ===================================================================
     st.subheader("Protected Areas Network (WDPA)")
 
+    st.caption(
+        "**Recommended format: GeoPackage (.gpkg)** — single file, no missing components. "
+        "Shapefile: upload as a ZIP archive containing .shp, .shx, .dbf and .prj."
+    )
+
     wdpa_uploaded_file = st.file_uploader(
         "Upload WDPA protected areas layer",
-        type=['gpkg', 'shp', 'geojson'],
+        type=['gpkg', 'geojson', 'zip'],
         key='wdpa_upload',
         help=(
-            "Vector file containing protected areas with 'IUCN_CAT' and "
-            "'DESIG_TYPE' columns for classification. "
-            "Formats: GeoPackage (.gpkg), Shapefile (.shp), or GeoJSON (.geojson)."
+            "GeoPackage (.gpkg) or GeoJSON (.geojson) recommended. "
+            "For Shapefiles, zip all components (.shp, .shx, .dbf, .prj) into a .zip archive. "
+            "Required columns: IUCN_CAT, DESIG_TYPE."
         )
     )
 
     # Store WDPA file in session state
     if wdpa_uploaded_file is not None:
-        # Save to temporary file
-        suffix = Path(wdpa_uploaded_file.name).suffix
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(wdpa_uploaded_file.read())
-            tmp.flush()
-            st.session_state['wdpa_file'] = tmp.name
-            logger.info(f"WDPA file uploaded: {tmp.name}")
+        import zipfile, os
+        suffix = Path(wdpa_uploaded_file.name).suffix.lower()
+        if suffix == '.zip':
+            # Extract ZIP to a temp directory and find the .shp or .gpkg inside
+            tmp_dir = tempfile.mkdtemp()
+            zip_bytes = wdpa_uploaded_file.read()
+            zip_path = os.path.join(tmp_dir, 'wdpa.zip')
+            with open(zip_path, 'wb') as f:
+                f.write(zip_bytes)
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(tmp_dir)
+            # Find the main vector file
+            for ext in ['.gpkg', '.shp', '.geojson']:
+                matches = [os.path.join(tmp_dir, fn)
+                           for fn in os.listdir(tmp_dir) if fn.lower().endswith(ext)]
+                if matches:
+                    st.session_state['wdpa_file'] = matches[0]
+                    st.caption(f"✅ Extracted: {Path(matches[0]).name}")
+                    logger.info(f"WDPA extracted from ZIP: {matches[0]}")
+                    break
+            else:
+                st.error("No .gpkg, .shp or .geojson found inside the ZIP archive.")
+                st.session_state['wdpa_file'] = None
+        else:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(wdpa_uploaded_file.read())
+                tmp.flush()
+                st.session_state['wdpa_file'] = tmp.name
+                logger.info(f"WDPA file uploaded: {tmp.name}")
     else:
         st.session_state['wdpa_file'] = None
 
