@@ -802,6 +802,273 @@ def normalize_layer(
         )
 
 
+def validate_and_rescale_layer(
+    array: np.ndarray,
+    profile: dict,
+    criterion_key: str,
+    config_path: Optional[str] = None
+) -> tuple[np.ndarray, dict, dict]:
+    """Validate and auto-rescale a raster layer to its expected value range.
+
+    Parameters
+    ----------
+    array : np.ndarray
+        Input raster array (may contain np.nan for NoData).
+    profile : dict
+        Rasterio profile dict.
+    criterion_key : str
+        One of: 'ecosystem_condition', 'regulating_es', 'cultural_es',
+        'provisioning_es', 'anthropogenic_pressure', 'landuse'
+    config_path : str, optional
+        Path to criteria_defaults.yaml. Uses default if None.
+
+    Returns
+    -------
+    array_out : np.ndarray
+        Rescaled array (float32), or original if already in range.
+    profile_out : dict
+        Updated profile (dtype float32 for continuous, int16 for landuse).
+    report : dict
+        {
+            'criterion': str,
+            'original_min': float,
+            'original_max': float,
+            'expected_min': float,
+            'expected_max': float,
+            'rescaled': bool,
+            'method': str,   # 'none', 'linear_rescale', 'warn_only'
+            'warning': str or None
+        }
+
+    Raises
+    ------
+    ValueError
+        If criterion_key is invalid or config cannot be loaded.
+
+    Notes
+    -----
+    Rescaling rules:
+    - Continuous [0-1] layers (ecosystem_condition, regulating_es, cultural_es,
+      provisioning_es): rescale if needed
+    - Anthropogenic pressure: accept any positive values, warn if already normalized
+    - Land use (landuse): expect integer codes in [111, 523], warn if float
+    """
+    logger.info(f"Validating and rescaling layer for criterion '{criterion_key}'")
+
+    # Define criterion groups
+    continuous_criteria = ['ecosystem_condition', 'regulating_es', 'cultural_es', 'provisioning_es']
+
+    # Validate criterion_key
+    valid_criteria = continuous_criteria + ['anthropogenic_pressure', 'landuse']
+    if criterion_key not in valid_criteria:
+        raise ValueError(
+            f"Invalid criterion_key '{criterion_key}'. "
+            f"Must be one of: {valid_criteria}"
+        )
+
+    # Calculate min/max ignoring NaN
+    valid_mask = ~np.isnan(array)
+    if not np.any(valid_mask):
+        raise ValueError(f"Array for '{criterion_key}' contains only NaN values")
+
+    original_min = float(np.nanmin(array))
+    original_max = float(np.nanmax(array))
+
+    logger.info(f"Original value range: [{original_min:.4f}, {original_max:.4f}]")
+
+    # Initialize report
+    report = {
+        'criterion': criterion_key,
+        'original_min': original_min,
+        'original_max': original_max,
+        'expected_min': None,
+        'expected_max': None,
+        'rescaled': False,
+        'method': 'none',
+        'warning': None
+    }
+
+    # Copy array and profile for output
+    array_out = array.copy()
+    profile_out = profile.copy()
+
+    # ===================================================================
+    # CONTINUOUS [0-1] LAYERS
+    # ===================================================================
+    if criterion_key in continuous_criteria:
+        report['expected_min'] = 0.0
+        report['expected_max'] = 1.0
+
+        # Case 1: Already in [0, 1]
+        if original_min >= 0.0 and original_max <= 1.0:
+            logger.info("Values already in [0, 1] range, no rescaling needed")
+            report['method'] = 'none'
+            profile_out['dtype'] = 'float32'
+            array_out = array_out.astype(np.float32)
+
+        # Case 2: Percentage scale [0, 100]
+        elif original_min >= 0.0 and original_max > 1.0 and original_max <= 100.0:
+            logger.info("Values appear to be percentages, dividing by 100")
+            array_out = array_out / 100.0
+            array_out = np.clip(array_out, 0.0, 1.0)
+            report['rescaled'] = True
+            report['method'] = 'linear_rescale'
+            profile_out['dtype'] = 'float32'
+            array_out = array_out.astype(np.float32)
+
+        # Case 3: Arbitrary range - linear min-max rescale
+        else:
+            logger.info(f"Values outside [0, 100], applying min-max rescaling")
+            # Linear rescale: (x - min) / (max - min)
+            if original_max > original_min:
+                array_out = (array_out - original_min) / (original_max - original_min)
+                array_out = np.clip(array_out, 0.0, 1.0)
+            else:
+                # Edge case: all values are the same
+                logger.warning(f"All values are identical ({original_min}), setting to 0.5")
+                array_out = np.where(valid_mask, 0.5, np.nan)
+
+            report['rescaled'] = True
+            report['method'] = 'linear_rescale'
+            profile_out['dtype'] = 'float32'
+            array_out = array_out.astype(np.float32)
+
+    # ===================================================================
+    # ANTHROPOGENIC PRESSURE
+    # ===================================================================
+    elif criterion_key == 'anthropogenic_pressure':
+        report['expected_min'] = 0.0
+        report['expected_max'] = None  # No upper limit
+
+        # Accept any positive values
+        if original_min < 0.0:
+            logger.warning(f"Negative values found in pressure layer (min={original_min})")
+            report['warning'] = f"Negative values found (min={original_min}). Expected positive values only."
+
+        # Warn if already normalized
+        if original_min >= 0.0 and original_max <= 1.0:
+            warning_msg = (
+                f"Values appear already normalised to [0, 1]. "
+                f"MCE will apply sigmoid/linear transform which may compress range further."
+            )
+            logger.warning(warning_msg)
+            report['warning'] = warning_msg
+            report['method'] = 'warn_only'
+
+        profile_out['dtype'] = 'float32'
+        array_out = array_out.astype(np.float32)
+
+    # ===================================================================
+    # LAND USE / CLC
+    # ===================================================================
+    elif criterion_key == 'landuse':
+        report['expected_min'] = 111
+        report['expected_max'] = 523
+
+        # Warn if float values in [0, 1] (pre-normalized)
+        if array.dtype in [np.float32, np.float64]:
+            if original_min >= 0.0 and original_max <= 1.0:
+                warning_msg = (
+                    f"Values are floats in [0, 1], which looks like a pre-normalised layer, "
+                    f"not raw CLC codes [111-523]."
+                )
+                logger.warning(warning_msg)
+                report['warning'] = warning_msg
+                report['method'] = 'warn_only'
+
+        # Warn if outside expected range
+        if original_min < 0.0 or original_max > 999:
+            warning_msg = f"Unexpected value range for land use: [{original_min}, {original_max}]. Expected [111-523]."
+            logger.warning(warning_msg)
+            report['warning'] = warning_msg
+            report['method'] = 'warn_only'
+
+        # Keep as-is (reclassification happens separately)
+        # Use int16 for categorical data
+        if np.issubdtype(array.dtype, np.integer):
+            profile_out['dtype'] = 'int16'
+            array_out = array_out.astype(np.int16)
+        else:
+            # If it's float, keep as float32
+            profile_out['dtype'] = 'float32'
+            array_out = array_out.astype(np.float32)
+
+    logger.info(f"Validation complete: rescaled={report['rescaled']}, method={report['method']}")
+    return array_out, profile_out, report
+
+
+def validate_and_rescale_all_layers(
+    raster_dict: dict[str, tuple[np.ndarray, dict]],
+    config_path: Optional[str] = None
+) -> tuple[dict[str, tuple[np.ndarray, dict]], list[dict]]:
+    """Run validate_and_rescale_layer on all layers.
+
+    Parameters
+    ----------
+    raster_dict : dict[str, tuple[np.ndarray, dict]]
+        Dictionary mapping criterion keys to (array, profile) tuples.
+        Keys must be valid criterion names: 'ecosystem_condition', 'regulating_es',
+        'cultural_es', 'provisioning_es', 'anthropogenic_pressure', 'landuse'.
+    config_path : str, optional
+        Path to criteria_defaults.yaml. Uses default if None.
+
+    Returns
+    -------
+    updated_dict : dict[str, tuple[np.ndarray, dict]]
+        Dictionary with validated and potentially rescaled rasters.
+    reports : list[dict]
+        List of validation reports, one per layer.
+
+    Raises
+    ------
+    ValueError
+        If any criterion key is invalid.
+
+    Notes
+    -----
+    Logs warnings for any layers that require attention (e.g., pre-normalized
+    pressure layers, float land use values).
+    """
+    logger.info(f"Validating and rescaling {len(raster_dict)} layers")
+
+    updated_dict = {}
+    reports = []
+
+    for criterion_key, (array, profile) in raster_dict.items():
+        logger.info(f"Processing '{criterion_key}'...")
+
+        try:
+            array_out, profile_out, report = validate_and_rescale_layer(
+                array=array,
+                profile=profile,
+                criterion_key=criterion_key,
+                config_path=config_path
+            )
+
+            updated_dict[criterion_key] = (array_out, profile_out)
+            reports.append(report)
+
+            # Log report summary
+            if report['rescaled']:
+                logger.info(
+                    f"  ✓ Rescaled from [{report['original_min']:.4f}, {report['original_max']:.4f}] "
+                    f"to [{report['expected_min']:.4f}, {report['expected_max']:.4f}]"
+                )
+            elif report['warning']:
+                logger.warning(f"  ⚠ {report['warning']}")
+            else:
+                logger.info(f"  ✓ No rescaling needed")
+
+        except Exception as e:
+            logger.error(f"Failed to validate '{criterion_key}': {e}")
+            raise
+
+    logger.info(f"All layers validated. {sum(r['rescaled'] for r in reports)} rescaled, "
+                f"{sum(1 for r in reports if r['warning']) } warnings.")
+
+    return updated_dict, reports
+
+
 # Legacy function stub for backward compatibility
 def harmonise_raster(input_raster, target_crs, target_resolution, resampling_method="bilinear"):
     """

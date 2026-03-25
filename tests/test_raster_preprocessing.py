@@ -25,7 +25,9 @@ from modules.module2_favourability.raster_preprocessing import (
     normalize_sigmoid,
     normalize_gaussian,
     normalize_layer,
-    derive_grid_from_geometry
+    derive_grid_from_geometry,
+    validate_and_rescale_layer,
+    validate_and_rescale_all_layers
 )
 
 
@@ -604,6 +606,317 @@ def test_align_rasters_warns_on_low_coverage(caplog):
     warning_messages = [record.message for record in caplog.records if record.levelname == "WARNING"]
     assert any("covers only" in msg and "80%" in msg for msg in warning_messages), \
         "Expected low coverage warning not found in logs"
+
+
+def test_validate_no_rescale_needed():
+    """Test validate_and_rescale_layer with values already in [0, 1]."""
+    # Create test array in [0, 1] range
+    test_array = np.array([
+        [0.0, 0.3, 0.5],
+        [0.7, 0.9, 1.0],
+        [np.nan, 0.4, 0.6]
+    ], dtype=np.float64)
+
+    test_profile = {
+        'dtype': 'float64',
+        'crs': 'EPSG:3035',
+        'transform': rasterio.transform.from_bounds(0, 0, 300, 300, 3, 3),
+        'width': 3,
+        'height': 3,
+        'count': 1
+    }
+
+    array_out, profile_out, report = validate_and_rescale_layer(
+        array=test_array,
+        profile=test_profile,
+        criterion_key='ecosystem_condition'
+    )
+
+    # Should not rescale
+    assert report['rescaled'] is False
+    assert report['method'] == 'none'
+    assert report['expected_min'] == 0.0
+    assert report['expected_max'] == 1.0
+    assert report['original_min'] == 0.0
+    assert report['original_max'] == 1.0
+
+    # Output should be float32
+    assert profile_out['dtype'] == 'float32'
+    assert array_out.dtype == np.float32
+
+    # Values should be unchanged (except dtype)
+    assert np.allclose(array_out, test_array, equal_nan=True)
+
+
+def test_validate_rescales_percentage():
+    """Test validate_and_rescale_layer with percentage values [0, 100]."""
+    # Create test array with percentage values
+    test_array = np.array([
+        [0.0, 30.0, 50.0],
+        [70.0, 90.0, 100.0],
+        [np.nan, 40.0, 60.0]
+    ], dtype=np.float64)
+
+    test_profile = {
+        'dtype': 'float64',
+        'crs': 'EPSG:3035',
+        'transform': rasterio.transform.from_bounds(0, 0, 300, 300, 3, 3),
+        'width': 3,
+        'height': 3,
+        'count': 1
+    }
+
+    array_out, profile_out, report = validate_and_rescale_layer(
+        array=test_array,
+        profile=test_profile,
+        criterion_key='regulating_es'
+    )
+
+    # Should rescale
+    assert report['rescaled'] is True
+    assert report['method'] == 'linear_rescale'
+    assert report['original_min'] == 0.0
+    assert report['original_max'] == 100.0
+
+    # Output should be in [0, 1]
+    valid_values = array_out[~np.isnan(array_out)]
+    assert np.all(valid_values >= 0.0)
+    assert np.all(valid_values <= 1.0)
+
+    # Check specific values (divided by 100)
+    assert np.isclose(array_out[0, 1], 0.30)
+    assert np.isclose(array_out[1, 2], 1.00)
+
+
+def test_validate_rescales_arbitrary_range():
+    """Test validate_and_rescale_layer with arbitrary value range."""
+    # Create test array with values in [-5, 200]
+    test_array = np.array([
+        [-5.0, 50.0, 100.0],
+        [150.0, 200.0, np.nan],
+        [25.0, 75.0, 125.0]
+    ], dtype=np.float64)
+
+    test_profile = {
+        'dtype': 'float64',
+        'crs': 'EPSG:3035',
+        'transform': rasterio.transform.from_bounds(0, 0, 300, 300, 3, 3),
+        'width': 3,
+        'height': 3,
+        'count': 1
+    }
+
+    array_out, profile_out, report = validate_and_rescale_layer(
+        array=test_array,
+        profile=test_profile,
+        criterion_key='cultural_es'
+    )
+
+    # Should rescale
+    assert report['rescaled'] is True
+    assert report['method'] == 'linear_rescale'
+    assert report['original_min'] == -5.0
+    assert report['original_max'] == 200.0
+
+    # Output should be in [0, 1]
+    valid_values = array_out[~np.isnan(array_out)]
+    assert np.all(valid_values >= 0.0)
+    assert np.all(valid_values <= 1.0)
+
+    # Check min and max rescaled correctly
+    # Min value (-5) should map to 0.0
+    assert np.isclose(array_out[0, 0], 0.0)
+    # Max value (200) should map to 1.0
+    assert np.isclose(array_out[1, 1], 1.0)
+
+    # Check intermediate value: 50 should map to (50 - (-5)) / (200 - (-5)) = 55/205
+    expected_mid = (50.0 - (-5.0)) / (200.0 - (-5.0))
+    assert np.isclose(array_out[0, 1], expected_mid)
+
+
+def test_validate_pressure_warns_if_normalised():
+    """Test validate_and_rescale_layer warns for pre-normalized pressure."""
+    # Create test array with values already in [0, 1]
+    test_array = np.array([
+        [0.0, 0.3, 0.5],
+        [0.7, 0.9, 1.0],
+        [np.nan, 0.4, 0.6]
+    ], dtype=np.float64)
+
+    test_profile = {
+        'dtype': 'float64',
+        'crs': 'EPSG:3035',
+        'transform': rasterio.transform.from_bounds(0, 0, 300, 300, 3, 3),
+        'width': 3,
+        'height': 3,
+        'count': 1
+    }
+
+    array_out, profile_out, report = validate_and_rescale_layer(
+        array=test_array,
+        profile=test_profile,
+        criterion_key='anthropogenic_pressure'
+    )
+
+    # Should not rescale but should warn
+    assert report['rescaled'] is False
+    assert report['method'] == 'warn_only'
+    assert report['warning'] is not None
+    assert 'already normalised' in report['warning'].lower()
+
+    # Values should be unchanged (except dtype)
+    assert np.allclose(array_out, test_array, equal_nan=True)
+
+
+def test_validate_landuse_warns_if_float():
+    """Test validate_and_rescale_layer warns for float land use values."""
+    # Create test array with float values in [0, 1]
+    test_array = np.array([
+        [0.0, 0.3, 0.5],
+        [0.7, 0.9, 1.0],
+        [np.nan, 0.4, 0.6]
+    ], dtype=np.float64)
+
+    test_profile = {
+        'dtype': 'float64',
+        'crs': 'EPSG:3035',
+        'transform': rasterio.transform.from_bounds(0, 0, 300, 300, 3, 3),
+        'width': 3,
+        'height': 3,
+        'count': 1
+    }
+
+    array_out, profile_out, report = validate_and_rescale_layer(
+        array=test_array,
+        profile=test_profile,
+        criterion_key='landuse'
+    )
+
+    # Should not rescale but should warn
+    assert report['rescaled'] is False
+    assert report['method'] == 'warn_only'
+    assert report['warning'] is not None
+    assert 'pre-normalised' in report['warning'].lower()
+
+    # Values should be unchanged (except dtype)
+    assert np.allclose(array_out, test_array, equal_nan=True)
+
+
+def test_validate_landuse_integer_codes():
+    """Test validate_and_rescale_layer with valid integer land use codes."""
+    # Create test array with valid CLC codes
+    test_array = np.array([
+        [111, 211, 312],
+        [523, 142, 231],
+        [0, 324, 411]  # 0 = NoData in CLC
+    ], dtype=np.int16)
+
+    test_profile = {
+        'dtype': 'int16',
+        'crs': 'EPSG:3035',
+        'transform': rasterio.transform.from_bounds(0, 0, 300, 300, 3, 3),
+        'width': 3,
+        'height': 3,
+        'count': 1,
+        'nodata': 0
+    }
+
+    # First apply nodata mask
+    test_array_masked = test_array.astype(np.float64)
+    test_array_masked[test_array == 0] = np.nan
+
+    array_out, profile_out, report = validate_and_rescale_layer(
+        array=test_array_masked,
+        profile=test_profile,
+        criterion_key='landuse'
+    )
+
+    # Should not rescale and no warning
+    assert report['rescaled'] is False
+    assert report['warning'] is None
+    assert report['expected_min'] == 111
+    assert report['expected_max'] == 523
+
+
+def test_validate_and_rescale_all_layers():
+    """Test validate_and_rescale_all_layers batch function."""
+    # Create test dictionary with multiple layers
+    raster_dict = {
+        'ecosystem_condition': (
+            np.array([[0.0, 0.5, 1.0]], dtype=np.float64),
+            {'dtype': 'float64', 'crs': 'EPSG:3035', 'width': 3, 'height': 1, 'count': 1,
+             'transform': rasterio.transform.from_bounds(0, 0, 300, 100, 3, 1)}
+        ),
+        'regulating_es': (
+            np.array([[0.0, 50.0, 100.0]], dtype=np.float64),  # Percentage
+            {'dtype': 'float64', 'crs': 'EPSG:3035', 'width': 3, 'height': 1, 'count': 1,
+             'transform': rasterio.transform.from_bounds(0, 0, 300, 100, 3, 1)}
+        ),
+        'anthropogenic_pressure': (
+            np.array([[10.0, 50.0, 150.0]], dtype=np.float64),  # hab/km²
+            {'dtype': 'float64', 'crs': 'EPSG:3035', 'width': 3, 'height': 1, 'count': 1,
+             'transform': rasterio.transform.from_bounds(0, 0, 300, 100, 3, 1)}
+        )
+    }
+
+    updated_dict, reports = validate_and_rescale_all_layers(raster_dict)
+
+    # Should have 3 reports
+    assert len(reports) == 3
+
+    # Check ecosystem_condition - no rescale
+    assert reports[0]['criterion'] == 'ecosystem_condition'
+    assert reports[0]['rescaled'] is False
+
+    # Check regulating_es - should rescale from percentage
+    assert reports[1]['criterion'] == 'regulating_es'
+    assert reports[1]['rescaled'] is True
+    assert reports[1]['method'] == 'linear_rescale'
+
+    # Check anthropogenic_pressure - no rescale, no warning for raw values
+    assert reports[2]['criterion'] == 'anthropogenic_pressure'
+    assert reports[2]['rescaled'] is False
+
+    # Check updated arrays
+    assert 'ecosystem_condition' in updated_dict
+    assert 'regulating_es' in updated_dict
+    assert 'anthropogenic_pressure' in updated_dict
+
+    # Regulating ES should be rescaled to [0, 1]
+    reg_es_array = updated_dict['regulating_es'][0]
+    assert np.allclose(reg_es_array, [0.0, 0.5, 1.0])
+
+
+def test_validate_invalid_criterion_raises_error():
+    """Test that invalid criterion_key raises ValueError."""
+    test_array = np.array([[0.0, 0.5, 1.0]], dtype=np.float64)
+    test_profile = {
+        'dtype': 'float64',
+        'crs': 'EPSG:3035',
+        'width': 3,
+        'height': 1,
+        'count': 1,
+        'transform': rasterio.transform.from_bounds(0, 0, 300, 100, 3, 1)
+    }
+
+    with pytest.raises(ValueError, match="Invalid criterion_key"):
+        validate_and_rescale_layer(test_array, test_profile, 'invalid_criterion')
+
+
+def test_validate_all_nan_raises_error():
+    """Test that array with all NaN values raises ValueError."""
+    test_array = np.array([[np.nan, np.nan, np.nan]], dtype=np.float64)
+    test_profile = {
+        'dtype': 'float64',
+        'crs': 'EPSG:3035',
+        'width': 3,
+        'height': 1,
+        'count': 1,
+        'transform': rasterio.transform.from_bounds(0, 0, 300, 100, 3, 1)
+    }
+
+    with pytest.raises(ValueError, match="only NaN values"):
+        validate_and_rescale_layer(test_array, test_profile, 'ecosystem_condition')
 
 
 if __name__ == "__main__":

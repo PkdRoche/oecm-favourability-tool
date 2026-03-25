@@ -3,8 +3,93 @@ import streamlit as st
 import tempfile
 from pathlib import Path
 import logging
+import numpy as np
+import rasterio
+
+# Import validation function with graceful fallback
+try:
+    from modules.module2_favourability.raster_preprocessing import (
+        validate_and_rescale_layer, load_raster
+    )
+    VALIDATION_AVAILABLE = True
+except ImportError:
+    VALIDATION_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_layer(criterion_key: str, file_path: str) -> None:
+    """
+    Validate and rescale a raster layer, storing results in session state.
+
+    Parameters
+    ----------
+    criterion_key : str
+        Criterion key (e.g., 'ecosystem_condition', 'anthropogenic_pressure').
+    file_path : str
+        Path to the uploaded raster file.
+
+    Notes
+    -----
+    This function:
+    - Calls validate_and_rescale_layer() if available
+    - Stores the validation report in st.session_state['validation_reports']
+    - If rescaling occurred, saves the rescaled array to a new temp file
+      and updates st.session_state['criterion_raster_paths']
+    - Uses a session state flag to avoid re-validation on every rerender
+    """
+    if not VALIDATION_AVAILABLE:
+        logger.warning("Validation function not available — skipping validation")
+        return
+
+    # Check if we've already validated this specific file path
+    validation_key = f"{criterion_key}_validated_path"
+    if st.session_state.get(validation_key) == file_path:
+        # Already validated this exact file — skip
+        return
+
+    # Validate and rescale
+    with st.spinner(f"Validating {criterion_key.replace('_', ' ')}..."):
+        try:
+            # Load the raster
+            array, profile = load_raster(file_path)
+
+            # Validate and rescale
+            rescaled_array, report = validate_and_rescale_layer(
+                array=array,
+                criterion=criterion_key,
+                profile=profile
+            )
+
+            # Store validation report
+            st.session_state['validation_reports'][criterion_key] = report
+
+            # If rescaling occurred, save to new temp file and update path
+            if report['rescaled']:
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
+                    temp_path = tmp.name
+
+                # Write rescaled array to the temp file
+                with rasterio.open(temp_path, 'w', **profile) as dst:
+                    dst.write(rescaled_array, 1)
+
+                # Update path in session state
+                st.session_state['criterion_raster_paths'][criterion_key] = temp_path
+                logger.info(f"Rescaled {criterion_key} saved to {temp_path}")
+
+            # Mark this path as validated
+            st.session_state[validation_key] = file_path
+
+            logger.info(f"Validation complete for {criterion_key}: {report}")
+
+        except Exception as e:
+            logger.error(f"Validation failed for {criterion_key}: {e}")
+            # Store error report
+            st.session_state['validation_reports'][criterion_key] = {
+                'criterion': criterion_key,
+                'error': str(e),
+                'rescaled': False
+            }
 
 
 def render():
@@ -36,6 +121,16 @@ def render():
         **All rasters must be in EPSG:3035** (LAEA Europe) with consistent resolution.
         """
     )
+
+    # Define required layers (used throughout the render function)
+    required_rasters = [
+        ('ecosystem_condition', 'Ecosystem condition'),
+        ('regulating_es', 'Regulating ES capacity'),
+        ('anthropogenic_pressure', 'Anthropogenic pressure'),
+        ('cultural_es', 'Cultural ES capacity'),
+        ('provisioning_es', 'Provisioning ES capacity'),
+        ('landuse', 'Land use / land cover')
+    ]
 
     st.markdown("---")
 
@@ -86,6 +181,10 @@ def render():
     if 'criterion_raster_paths' not in st.session_state:
         st.session_state['criterion_raster_paths'] = {}
 
+    # Initialize dictionary to store validation reports
+    if 'validation_reports' not in st.session_state:
+        st.session_state['validation_reports'] = {}
+
     with col_left:
         st.markdown("#### Group A — Ecological Integrity")
 
@@ -103,8 +202,11 @@ def render():
                 tmp.flush()
                 st.session_state['criterion_raster_paths']['ecosystem_condition'] = tmp.name
                 logger.info(f"Ecosystem condition uploaded: {tmp.name}")
+                # Validate and rescale if needed
+                _validate_layer('ecosystem_condition', tmp.name)
         else:
             st.session_state['criterion_raster_paths'].pop('ecosystem_condition', None)
+            st.session_state['validation_reports'].pop('ecosystem_condition', None)
 
         # Regulating ES
         regulating_es_file = st.file_uploader(
@@ -120,8 +222,11 @@ def render():
                 tmp.flush()
                 st.session_state['criterion_raster_paths']['regulating_es'] = tmp.name
                 logger.info(f"Regulating ES uploaded: {tmp.name}")
+                # Validate and rescale if needed
+                _validate_layer('regulating_es', tmp.name)
         else:
             st.session_state['criterion_raster_paths'].pop('regulating_es', None)
+            st.session_state['validation_reports'].pop('regulating_es', None)
 
         # Anthropogenic pressure
         pressure_file = st.file_uploader(
@@ -137,8 +242,11 @@ def render():
                 tmp.flush()
                 st.session_state['criterion_raster_paths']['anthropogenic_pressure'] = tmp.name
                 logger.info(f"Anthropogenic pressure uploaded: {tmp.name}")
+                # Validate and rescale if needed
+                _validate_layer('anthropogenic_pressure', tmp.name)
         else:
             st.session_state['criterion_raster_paths'].pop('anthropogenic_pressure', None)
+            st.session_state['validation_reports'].pop('anthropogenic_pressure', None)
 
     with col_right:
         st.markdown("#### Group B — Co-benefits")
@@ -157,8 +265,11 @@ def render():
                 tmp.flush()
                 st.session_state['criterion_raster_paths']['cultural_es'] = tmp.name
                 logger.info(f"Cultural ES uploaded: {tmp.name}")
+                # Validate and rescale if needed
+                _validate_layer('cultural_es', tmp.name)
         else:
             st.session_state['criterion_raster_paths'].pop('cultural_es', None)
+            st.session_state['validation_reports'].pop('cultural_es', None)
 
         st.markdown("#### Group C — Production Function")
 
@@ -176,8 +287,11 @@ def render():
                 tmp.flush()
                 st.session_state['criterion_raster_paths']['provisioning_es'] = tmp.name
                 logger.info(f"Provisioning ES uploaded: {tmp.name}")
+                # Validate and rescale if needed
+                _validate_layer('provisioning_es', tmp.name)
         else:
             st.session_state['criterion_raster_paths'].pop('provisioning_es', None)
+            st.session_state['validation_reports'].pop('provisioning_es', None)
 
         # Land use / land cover — path input (CLC is >200 MB, too large to upload)
         st.markdown("**Land use / land cover (categorical)**")
@@ -199,11 +313,94 @@ def render():
             st.session_state['criterion_raster_paths']['landuse'] = landuse_path
             st.success(f"✓ Found: {Path(landuse_path).name}")
             logger.info(f"Land use path set: {landuse_path}")
+            # Validate land use layer
+            _validate_layer('landuse', landuse_path)
         elif landuse_path:
             st.error("File not found — please check the path.")
             st.session_state['criterion_raster_paths'].pop('landuse', None)
+            st.session_state['validation_reports'].pop('landuse', None)
         else:
             st.session_state['criterion_raster_paths'].pop('landuse', None)
+            st.session_state['validation_reports'].pop('landuse', None)
+
+    st.markdown("---")
+
+    # ===================================================================
+    # Layer Validation section
+    # ===================================================================
+    if VALIDATION_AVAILABLE:
+        st.subheader("Layer Validation")
+
+        validation_reports = st.session_state.get('validation_reports', {})
+        uploaded_rasters = st.session_state.get('criterion_raster_paths', {})
+
+        # Check if any layers have been uploaded
+        if uploaded_rasters:
+            # Display validation status for each layer in required_rasters
+            for key, label in required_rasters:
+                col_layer, col_status = st.columns([3, 1])
+
+                with col_layer:
+                    st.markdown(f"**{label}**")
+
+                    if key in validation_reports:
+                        report = validation_reports[key]
+
+                        # Check for validation error
+                        if 'error' in report:
+                            st.error(f"Validation failed: {report['error']}")
+                        else:
+                            # Build display message
+                            orig_min = report.get('original_min', 'N/A')
+                            orig_max = report.get('original_max', 'N/A')
+                            exp_min = report.get('expected_min', 'N/A')
+                            exp_max = report.get('expected_max', 'N/A')
+
+                            # Format ranges
+                            if isinstance(orig_min, (int, float)) and isinstance(orig_max, (int, float)):
+                                orig_range = f"[{orig_min:.3f}, {orig_max:.3f}]"
+                            else:
+                                orig_range = f"[{orig_min}, {orig_max}]"
+
+                            if isinstance(exp_min, (int, float)) and isinstance(exp_max, (int, float)):
+                                if exp_min == 0 and exp_max == 1:
+                                    exp_range = "[0, 1]"
+                                else:
+                                    exp_range = f"[{exp_min:.3f}, {exp_max:.3f}]"
+                            else:
+                                exp_range = str(exp_max) if exp_max == exp_min else f"[{exp_min}, {exp_max}]"
+
+                            st.caption(f"Original: {orig_range} → Expected: {exp_range}")
+
+                            if report.get('warning'):
+                                st.warning(f"⚠️ {report['warning']}")
+
+                    elif key in uploaded_rasters:
+                        st.caption("Uploaded — validation pending")
+                    else:
+                        st.caption("Not uploaded")
+
+                with col_status:
+                    if key in validation_reports:
+                        report = validation_reports[key]
+
+                        if 'error' in report:
+                            st.error("⚪ Error")
+                        elif report.get('rescaled'):
+                            st.info("🔵 Auto-rescaled")
+                        elif report.get('warning'):
+                            st.warning("🟡 Warning")
+                        else:
+                            st.success("🟢 OK")
+                    elif key in uploaded_rasters:
+                        st.info("⏳ Pending")
+                    else:
+                        st.error("⚪ Not uploaded")
+
+                st.markdown("---")
+
+        else:
+            st.info("Upload raster layers above to see validation results.")
 
     st.markdown("---")
 
@@ -211,16 +408,6 @@ def render():
     # Validation summary
     # ===================================================================
     st.subheader("Upload Status")
-
-    # Define required layers
-    required_rasters = [
-        ('ecosystem_condition', 'Ecosystem condition'),
-        ('regulating_es', 'Regulating ES capacity'),
-        ('anthropogenic_pressure', 'Anthropogenic pressure'),
-        ('cultural_es', 'Cultural ES capacity'),
-        ('provisioning_es', 'Provisioning ES capacity'),
-        ('landuse', 'Land use / land cover')
-    ]
 
     # Check upload status
     uploaded_rasters = st.session_state.get('criterion_raster_paths', {})
