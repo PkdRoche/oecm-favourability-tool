@@ -45,6 +45,17 @@ def _validate_layer(criterion_key: str, file_path: str) -> None:
     # CLC land use values are categorical integer codes — no rescaling needed
     if criterion_key == 'landuse':
         logger.info("Skipping validation for CLC land use layer (categorical codes, no rescaling)")
+        st.session_state['validation_reports'][criterion_key] = {
+            'criterion': criterion_key,
+            'original_min': None,
+            'original_max': None,
+            'expected_min': 111,
+            'expected_max': 523,
+            'rescaled': False,
+            'method': 'none',
+            'warning': None
+        }
+        st.session_state[f"{criterion_key}_validated_path"] = file_path
         return
 
     # Check if we've already validated this specific file path
