@@ -228,8 +228,8 @@ def filter_to_extent(
         extent_crs = extent_geom.crs
         extent_geom_single = extent_geom.iloc[0] if hasattr(extent_geom, 'iloc') else extent_geom
     else:
-        # Assume WGS84 if no CRS specified
-        extent_crs = 'EPSG:4326'
+        # Default to EPSG:3035 (tool working CRS — NUTS2 geometries are always in 3035)
+        extent_crs = 'EPSG:3035'
         extent_geom_single = extent_geom
 
     # Check CRS match
