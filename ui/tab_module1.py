@@ -48,20 +48,45 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
     """
     st.header("Module 1 — Protected Area Network Diagnostic")
 
-    # Check if data is available
-    if pa_gdf is None or territory_geom is None:
-        st.info(
-            "Load protected area data to begin analysis. "
-            "Configure study area in the sidebar and upload PA vector layer."
-        )
-        st.markdown("### Quick Start")
-        st.markdown(
-            "1. Select your study region in the sidebar (Country → NUTS2 region) — "
-            "this defines the territory boundary automatically\n"
-            "2. Upload your WDPA file in the **① Data Upload** tab\n"
-            "3. Optionally upload an ecosystem type layer for representativity analysis"
-        )
+    # ===================================================================
+    # Load WDPA and run analysis if not already done
+    # ===================================================================
+    wdpa_file = st.session_state.get('wdpa_file')
+    territory_geom = st.session_state.get('territory_geom')
+    pa_gdf = st.session_state.get('pa_gdf')
+
+    if territory_geom is None:
+        st.info("Select your study region in the sidebar (Country → NUTS2 region) first.")
         return
+
+    if wdpa_file is None:
+        st.info("Upload your WDPA protected areas file in the **① Data Upload** tab first.")
+        return
+
+    if pa_gdf is None:
+        st.info("WDPA file loaded. Click the button below to run the diagnostic.")
+        if st.button("▶ Run Protection Network Diagnostic", type="primary", use_container_width=True):
+            with st.spinner("Loading and classifying protected areas…"):
+                try:
+                    from modules.module1_protected_areas.wdpa_loader import (
+                        load_wdpa_local, filter_to_extent, classify_iucn
+                    )
+                    gdf = load_wdpa_local(wdpa_file)
+                    gdf = filter_to_extent(gdf, territory_geom)
+                    gdf = classify_iucn(gdf)
+                    st.session_state['pa_gdf'] = gdf
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to load WDPA data: {e}")
+                    logger.exception("WDPA load failed")
+        return
+
+    pa_gdf = st.session_state['pa_gdf']
+
+    # Button to re-run with fresh data
+    if st.button("↺ Re-run Diagnostic", use_container_width=False):
+        st.session_state.pop('pa_gdf', None)
+        st.rerun()
 
     # Import module functions (only when data is available)
     from modules.module1_protected_areas.coverage_stats import (
