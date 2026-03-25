@@ -141,12 +141,14 @@ def zonal_stats_by_pa_class(
                         )
 
                         # Extract valid pixels (first band)
-                        pixels = masked_array[0]
+                        pixels = masked_array[0].astype(np.float64)
                         if nodata_value is not None:
                             valid_pixels = pixels[pixels != nodata_value]
                         else:
-                            # If no nodata, consider all pixels
-                            valid_pixels = pixels[~np.isnan(pixels)]
+                            valid_pixels = pixels
+                        # Always remove NaN (temp rasters may store nodata as NaN
+                        # even when nodata metadata says a sentinel value like -99999)
+                        valid_pixels = valid_pixels[~np.isnan(valid_pixels)]
 
                         # Compute statistics
                         if len(valid_pixels) > 0:
@@ -196,13 +198,13 @@ def zonal_stats_by_pa_class(
                 )
 
                 # Extract pixels OUTSIDE PAs
-                outside_pixels = raster_data[pa_mask]
+                outside_pixels = raster_data[pa_mask].astype(np.float64)
 
                 # Filter out nodata
                 if nodata_value is not None:
                     outside_pixels = outside_pixels[outside_pixels != nodata_value]
-                else:
-                    outside_pixels = outside_pixels[~np.isnan(outside_pixels)]
+                # Always remove NaN regardless of nodata convention
+                outside_pixels = outside_pixels[~np.isnan(outside_pixels)]
 
                 # Compute statistics for outside areas
                 if len(outside_pixels) > 0:
