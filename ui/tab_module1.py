@@ -579,14 +579,16 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                 st.markdown("#### Mean Criterion Scores by Protection Class")
                 st.caption(
                     "All criteria normalised to [0–1] for display. "
-                    "Anthropogenic pressure is inverted (lower raw value = higher score)."
+                    "Anthropogenic pressure is inverted (lower raw value = higher score). "
+                    "Land use (CLC categorical codes) is excluded — see breakdown below."
                 )
 
                 try:
                     import plotly.express as px
 
                     # Normalise each criterion to [0-1] for comparable display
-                    chart_data = zonal_df[['criterion', 'pa_class', 'mean']].copy()
+                    # Exclude 'landuse' — CLC codes are categorical, mean is meaningless
+                    chart_data = zonal_df[zonal_df['criterion'] != 'landuse'][['criterion', 'pa_class', 'mean']].copy()
                     for crit in chart_data['criterion'].unique():
                         mask = chart_data['criterion'] == crit
                         vals = chart_data.loc[mask, 'mean']
@@ -637,14 +639,18 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                     # Fallback to simpler visualization if plotly not available
                     st.warning("Plotly not available. Install plotly for interactive charts.")
                     st.bar_chart(
-                        zonal_df.pivot(index='criterion', columns='pa_class', values='mean')
+                        zonal_df[zonal_df['criterion'] != 'landuse'].pivot(
+                            index='criterion', columns='pa_class', values='mean'
+                        )
                     )
 
-                # Row 2: Summary pivot table
+                # Row 2: Summary pivot table (continuous criteria only)
                 st.markdown("#### Summary: Mean Scores by PA Class")
 
                 try:
-                    summary_df = criterion_coverage_summary(zonal_df)
+                    summary_df = criterion_coverage_summary(
+                        zonal_df[zonal_df['criterion'] != 'landuse']
+                    )
 
                     # Format for display
                     display_summary = summary_df.copy()
@@ -661,12 +667,14 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
 
                 # Row 3: Expandable detailed statistics
                 with st.expander("Detailed Statistics (min/median/max/std)"):
-                    st.markdown("**Per-criterion box-plot statistics:**")
+                    st.markdown("**Per-criterion box-plot statistics (continuous criteria only):**")
 
-                    # Create detailed table
+                    # Create detailed table — exclude landuse (categorical)
                     detailed_stats = []
 
                     for criterion in zonal_df['criterion'].unique():
+                        if criterion == 'landuse':
+                            continue
                         criterion_data = zonal_df[zonal_df['criterion'] == criterion]
 
                         for pa_class in criterion_data['pa_class'].unique():
@@ -691,6 +699,49 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                         hide_index=True,
                         use_container_width=True
                     )
+
+                # Row 4: CLC land use class breakdown
+                if 'landuse' in st.session_state.get('criterion_raster_paths', {}):
+                    st.markdown("#### Land Use Composition (CLC Classes)")
+                    st.caption("Pixel counts per Corine Land Cover class within each zone.")
+                    try:
+                        from modules.utils.clc_loader import get_clc_legend
+                        import rasterio as _rio
+
+                        clc_legend = get_clc_legend()
+                        lu_path = st.session_state['criterion_raster_paths']['landuse']
+
+                        # Get PA class masks from zonal stats session state
+                        # Re-read just the landuse raster to get categorical breakdown
+                        with _rio.open(lu_path) as src:
+                            lu_array = src.read(1).astype(float)
+                            lu_nodata = src.nodata
+                        if lu_nodata is not None:
+                            lu_array[lu_array == lu_nodata] = np.nan
+
+                        # Count pixels per CLC code
+                        valid_codes = lu_array[~np.isnan(lu_array)].astype(int)
+                        unique_codes, counts = np.unique(valid_codes, return_counts=True)
+
+                        # Build display table with CLC labels
+                        clc_rows = []
+                        for code, cnt in sorted(zip(unique_codes, counts), key=lambda x: -x[1]):
+                            meta = clc_legend.get(int(code), {})
+                            label = meta.get('label', f'Code {code}')
+                            level1 = meta.get('level1', '')
+                            clc_rows.append({
+                                'CLC Code': int(code),
+                                'Label': label,
+                                'Level 1': level1,
+                                'Pixel Count': int(cnt),
+                                '% of area': f"{100.0 * cnt / len(valid_codes):.1f}%"
+                            })
+
+                        clc_table = pd.DataFrame(clc_rows)
+                        st.dataframe(clc_table, hide_index=True, use_container_width=True)
+
+                    except Exception as e:
+                        st.caption(f"CLC breakdown unavailable: {e}")
 
     except Exception as e:
         st.warning(
