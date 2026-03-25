@@ -56,10 +56,10 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
         )
         st.markdown("### Quick Start")
         st.markdown(
-            "1. Select study area (Country → NUTS2 Region) in sidebar\n"
-            "2. Upload WDPA shapefile or GeoPackage\n"
-            "3. Upload territory boundary polygon\n"
-            "4. Optionally upload ecosystem type layer for representativity analysis"
+            "1. Select your study region in the sidebar (Country → NUTS2 region) — "
+            "this defines the territory boundary automatically\n"
+            "2. Upload your WDPA file in the **① Data Upload** tab\n"
+            "3. Optionally upload an ecosystem type layer for representativity analysis"
         )
         return
 
