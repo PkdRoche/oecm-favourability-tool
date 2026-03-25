@@ -179,24 +179,31 @@ def render():
         else:
             st.session_state['criterion_raster_paths'].pop('provisioning_es', None)
 
-        # Land use / land cover
-        landuse_file = st.file_uploader(
-            "Land use / land cover (categorical)",
-            type=['tif', 'tiff'],
-            key='landuse_upload',
-            help="Categorical land cover classification (Corine Land Cover 2018 recommended)"
+        # Land use / land cover — path input (CLC is >200 MB, too large to upload)
+        st.markdown("**Land use / land cover (categorical)**")
+        st.caption(
+            "Corine Land Cover 2018 recommended. "
+            "Provide the local file path — CLC is typically >600 MB and cannot be uploaded directly."
+        )
+        landuse_path = st.text_input(
+            "Local file path to CLC GeoTIFF",
+            key='landuse_path_input',
+            placeholder=r"C:\data\CLC2018_CLC2018_V2018_20.tif",
+            help=(
+                "Paste the full path to your Corine Land Cover 2018 GeoTIFF. "
+                "Download free from https://land.copernicus.eu/pan-european/corine-land-cover"
+            )
         )
 
-        if landuse_file is not None:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
-                tmp.write(landuse_file.read())
-                tmp.flush()
-                st.session_state['criterion_raster_paths']['landuse'] = tmp.name
-                logger.info(f"Land use uploaded: {tmp.name}")
+        if landuse_path and Path(landuse_path).is_file():
+            st.session_state['criterion_raster_paths']['landuse'] = landuse_path
+            st.success(f"✓ Found: {Path(landuse_path).name}")
+            logger.info(f"Land use path set: {landuse_path}")
+        elif landuse_path:
+            st.error("File not found — please check the path.")
+            st.session_state['criterion_raster_paths'].pop('landuse', None)
         else:
             st.session_state['criterion_raster_paths'].pop('landuse', None)
-
-        st.caption("**Note:** Corine Land Cover 2018 recommended for land use layer")
 
     st.markdown("---")
 
