@@ -2,6 +2,13 @@
 import streamlit as st
 import yaml
 from pathlib import Path
+from shapely.geometry import box
+from modules.utils.nuts2_loader import (
+    load_nuts2,
+    get_countries,
+    get_nuts2_for_country,
+    get_nuts2_geometry
+)
 
 
 def load_config_defaults():
@@ -53,7 +60,9 @@ def render_sidebar():
     -------
     dict
         Dictionary of user-configured parameters including:
-        - iso3: country code (str)
+        - study_area_nuts_id: NUTS2 region ID or 'CUSTOM' (str)
+        - study_area_name: Region name or custom bbox description (str)
+        - study_area_geometry: Shapely geometry in EPSG:3035 (BaseGeometry)
         - threshold_pressure: eliminatory pressure threshold (float)
         - method: aggregation method ('geometric' or 'owa')
         - alpha: OWA orness parameter (float)
@@ -71,17 +80,98 @@ def render_sidebar():
     st.sidebar.markdown("---")
 
     # ===================================================================
-    # Section 1: Study area
+    # Section 1: Study area (NUTS2 selector)
     # ===================================================================
     st.sidebar.header("1. Study Area")
 
-    iso3 = st.sidebar.text_input(
-        "ISO3 Country Code",
-        value="FRA",
-        max_chars=3,
-        help="Three-letter ISO 3166-1 alpha-3 country code"
-    )
+    # Initialize study area variables
+    study_area_nuts_id = None
+    study_area_name = None
+    study_area_geometry = None
+    selected_country = None
 
+    # Try to load NUTS2 boundaries
+    nuts2_load_failed = False
+    nuts2_gdf = None
+
+    try:
+        nuts2_gdf = load_nuts2(year=2021, scale="20M")
+    except Exception as e:
+        nuts2_load_failed = True
+        st.sidebar.warning(
+            f"Could not load NUTS2 boundaries from Eurostat: {e}\n\n"
+            "Falling back to manual bounding box input."
+        )
+
+    if not nuts2_load_failed and nuts2_gdf is not None:
+        # Two-step selector: Country → NUTS2 Region
+        countries = get_countries(nuts2_gdf)
+
+        # Default to France if available
+        default_country_idx = countries.index("FR") if "FR" in countries else 0
+
+        selected_country = st.sidebar.selectbox(
+            "Country",
+            options=countries,
+            index=default_country_idx,
+            help="Select country (2-letter ISO code)"
+        )
+
+        # Filter NUTS2 regions for selected country
+        nuts2_regions = get_nuts2_for_country(nuts2_gdf, selected_country)
+
+        # Create display options: "Region Name (NUTS_ID)"
+        region_options = [
+            f"{row.NUTS_NAME} ({row.NUTS_ID})"
+            for _, row in nuts2_regions.iterrows()
+        ]
+
+        # Extract NUTS_IDs for lookup
+        region_nuts_ids = nuts2_regions['NUTS_ID'].tolist()
+
+        if len(region_options) > 0:
+            selected_region_idx = st.sidebar.selectbox(
+                "NUTS2 Region",
+                options=range(len(region_options)),
+                format_func=lambda i: region_options[i],
+                help="Select NUTS2 administrative region"
+            )
+
+            # Retrieve selected NUTS_ID and geometry
+            study_area_nuts_id = region_nuts_ids[selected_region_idx]
+            study_area_name = nuts2_regions.iloc[selected_region_idx]['NUTS_NAME']
+            study_area_geometry = get_nuts2_geometry(nuts2_gdf, study_area_nuts_id)
+
+            # Display region details
+            if study_area_geometry is not None:
+                area_km2 = study_area_geometry.area / 1_000_000  # EPSG:3035 is in meters
+                st.sidebar.caption(
+                    f"**{study_area_nuts_id}** — {area_km2:,.0f} km²"
+                )
+        else:
+            st.sidebar.error(f"No NUTS2 regions found for country {selected_country}")
+
+    else:
+        # Fallback: manual bounding box input
+        st.sidebar.info("Enter bounding box coordinates in EPSG:3035 (meters)")
+
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            xmin = st.number_input("X min", value=2500000.0, step=1000.0)
+            ymin = st.number_input("Y min", value=1500000.0, step=1000.0)
+        with col2:
+            xmax = st.number_input("X max", value=3500000.0, step=1000.0)
+            ymax = st.number_input("Y max", value=2500000.0, step=1000.0)
+
+        # Create bounding box geometry
+        study_area_geometry = box(xmin, ymin, xmax, ymax)
+        study_area_name = f"Custom bbox ({xmin:.0f}, {ymin:.0f}, {xmax:.0f}, {ymax:.0f})"
+        study_area_nuts_id = "CUSTOM"
+
+        area_km2 = study_area_geometry.area / 1_000_000
+        st.sidebar.caption(f"Area: {area_km2:,.0f} km²")
+
+    # Display settings
     if settings:
         resolution_m = settings.get('resolution_m', 100)
         crs = settings.get('crs', 'EPSG:3035')
@@ -418,7 +508,9 @@ def render_sidebar():
     # Return all parameters
     # ===================================================================
     return {
-        'iso3': iso3.upper(),
+        'study_area_nuts_id': study_area_nuts_id,
+        'study_area_name': study_area_name,
+        'study_area_geometry': study_area_geometry,
         'threshold_pressure': threshold_pressure,
         'method': method,
         'alpha': alpha,

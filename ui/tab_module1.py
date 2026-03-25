@@ -56,7 +56,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
         )
         st.markdown("### Quick Start")
         st.markdown(
-            "1. Set ISO3 country code in sidebar (e.g., 'FRA' for France)\n"
+            "1. Select study area (Country → NUTS2 Region) in sidebar\n"
             "2. Upload WDPA shapefile or GeoPackage\n"
             "3. Upload territory boundary polygon\n"
             "4. Optionally upload ecosystem type layer for representativity analysis"
