@@ -53,16 +53,20 @@ st.markdown("---")
 st.markdown(
     """
     <style>
-    /* Tab labels */
+    /* Tab labels — close to h1/title size */
     .stTabs [data-baseweb="tab"] {
-        font-size: 1.6rem;
+        font-size: 2.0rem;
         font-weight: 700;
-        padding: 0.7rem 1.8rem;
+        padding: 0.8rem 2.2rem;
         letter-spacing: 0.01em;
+    }
+    .stTabs [data-baseweb="tab"] p {
+        font-size: 2.0rem !important;
+        font-weight: 700 !important;
     }
     /* Active tab underline accent */
     .stTabs [aria-selected="true"] {
-        border-bottom: 3px solid #2e7d32;
+        border-bottom: 4px solid #2e7d32;
         color: #2e7d32;
     }
     </style>
