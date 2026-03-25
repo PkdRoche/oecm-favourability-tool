@@ -310,8 +310,12 @@ def classify_iucn(
         logger.warning("IUCN_CAT column not found, creating empty column")
         gdf['IUCN_CAT'] = ''
 
-    if 'DESIG' not in gdf.columns:
-        logger.warning("DESIG column not found, creating empty column")
+    # Accept DESIG or DESIG_ENG (WDPA uses DESIG_ENG in most exports)
+    if 'DESIG' not in gdf.columns and 'DESIG_ENG' in gdf.columns:
+        gdf['DESIG'] = gdf['DESIG_ENG']
+        logger.info("Using DESIG_ENG as DESIG column")
+    elif 'DESIG' not in gdf.columns:
+        logger.warning("Neither DESIG nor DESIG_ENG found, creating empty column")
         gdf['DESIG'] = ''
 
     # Initialize protection_class column

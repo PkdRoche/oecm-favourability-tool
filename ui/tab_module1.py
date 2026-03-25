@@ -227,8 +227,13 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
     # Load colour scheme
     iucn_classes = load_iucn_classification()
 
-    # Create folium map centered on territory
-    centroid = territory_geom.centroid
+    # Reproject to EPSG:4326 for folium (needs lat/lon)
+    import geopandas as gpd
+    from shapely.geometry import mapping
+    pa_gdf_4326 = pa_gdf.to_crs('EPSG:4326')
+    territory_gs = gpd.GeoSeries([territory_geom], crs='EPSG:3035').to_crs('EPSG:4326')
+    centroid = territory_gs.iloc[0].centroid
+
     m = folium.Map(
         location=[centroid.y, centroid.x],
         zoom_start=8,
@@ -236,7 +241,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
     )
 
     # Add PA polygons coloured by protection class
-    for _, row in pa_gdf.iterrows():
+    for _, row in pa_gdf_4326.iterrows():
         # Get colour for this class
         class_name = row.get('protection_class', 'unassigned')
         class_info = iucn_classes.get(class_name, {})
@@ -441,17 +446,17 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
 
         gap_layers = st.session_state['gap_layers']
 
-        # Create folium map
+        # Create folium map (centroid already in EPSG:4326 from above)
         m_gaps = folium.Map(
             location=[centroid.y, centroid.x],
             zoom_start=8,
             tiles='OpenStreetMap'
         )
 
-        # Add gap layers as toggleable overlays
+        # Add gap layers as toggleable overlays (reproject to 4326)
         if len(gap_layers['strict_gaps']) > 0:
             folium.GeoJson(
-                gap_layers['strict_gaps'],
+                gap_layers['strict_gaps'].to_crs('EPSG:4326') if hasattr(gap_layers['strict_gaps'], 'to_crs') else gap_layers['strict_gaps'],
                 name='Strict Gaps',
                 style_function=lambda x: {
                     'fillColor': '#D0021B',
