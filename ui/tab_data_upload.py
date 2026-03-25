@@ -116,10 +116,8 @@ def render():
     """
     st.header("Input Data Upload")
     st.markdown(
-        """
-        Upload all required layers before running the analysis.
-        **All rasters must be in EPSG:3035** (LAEA Europe) with consistent resolution.
-        """
+        "Provide local file paths to all required layers before running the analysis. "
+        "**All rasters must be in EPSG:3035** (LAEA Europe) with consistent resolution."
     )
 
     # Define required layers (used throughout the render function)
@@ -169,159 +167,75 @@ def render():
     # ===================================================================
     st.subheader("Multi-Criteria Evaluation Layers")
     st.markdown(
-        """
-        Upload the six criterion rasters required for OECM favourability analysis.
-        Each raster must be a GeoTIFF in EPSG:3035 with identical extent and resolution.
-        """
+        "Provide the local file path for each criterion raster (GeoTIFF, EPSG:3035). "
+        "Large files such as Corine Land Cover (>600 MB) are supported — no upload size limit."
     )
 
-    col_left, col_right = st.columns(2)
-
-    # Initialize dictionary to store raster paths
+    # Initialize session state dicts
     if 'criterion_raster_paths' not in st.session_state:
         st.session_state['criterion_raster_paths'] = {}
-
-    # Initialize dictionary to store validation reports
     if 'validation_reports' not in st.session_state:
         st.session_state['validation_reports'] = {}
 
+    # Helper: render one path input and update session state
+    def _layer_path_input(criterion_key, label, placeholder, help_text):
+        path = st.text_input(
+            label,
+            key=f'{criterion_key}_path',
+            placeholder=placeholder,
+            help=help_text,
+        )
+        if path and Path(path).is_file():
+            st.session_state['criterion_raster_paths'][criterion_key] = path
+            st.caption(f"✅ {Path(path).name}")
+            _validate_layer(criterion_key, path)
+        elif path:
+            st.caption("❌ File not found — check the path.")
+            st.session_state['criterion_raster_paths'].pop(criterion_key, None)
+            st.session_state['validation_reports'].pop(criterion_key, None)
+        else:
+            st.session_state['criterion_raster_paths'].pop(criterion_key, None)
+            st.session_state['validation_reports'].pop(criterion_key, None)
+
+    col_left, col_right = st.columns(2)
+
     with col_left:
         st.markdown("#### Group A — Ecological Integrity")
-
-        # Ecosystem condition
-        eco_condition_file = st.file_uploader(
-            "Ecosystem condition [0-1]",
-            type=['tif', 'tiff'],
-            key='eco_condition_upload',
-            help="Normalized ecosystem condition index (0 = degraded, 1 = pristine)"
+        _layer_path_input(
+            'ecosystem_condition', "Ecosystem condition [0–1]",
+            r"C:\data\ecosystem_condition.tif",
+            "Normalised ecosystem condition index (0 = degraded, 1 = pristine)."
         )
-
-        if eco_condition_file is not None:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
-                tmp.write(eco_condition_file.read())
-                tmp.flush()
-                st.session_state['criterion_raster_paths']['ecosystem_condition'] = tmp.name
-                logger.info(f"Ecosystem condition uploaded: {tmp.name}")
-                # Validate and rescale if needed
-                _validate_layer('ecosystem_condition', tmp.name)
-        else:
-            st.session_state['criterion_raster_paths'].pop('ecosystem_condition', None)
-            st.session_state['validation_reports'].pop('ecosystem_condition', None)
-
-        # Regulating ES
-        regulating_es_file = st.file_uploader(
-            "Regulating ES capacity [0-1]",
-            type=['tif', 'tiff'],
-            key='reg_es_upload',
-            help="Regulating ecosystem services capacity (e.g., carbon storage, water regulation)"
+        _layer_path_input(
+            'regulating_es', "Regulating ES capacity [0–1]",
+            r"C:\data\regulating_es.tif",
+            "Regulating ecosystem services capacity (e.g. carbon storage, water regulation)."
         )
-
-        if regulating_es_file is not None:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
-                tmp.write(regulating_es_file.read())
-                tmp.flush()
-                st.session_state['criterion_raster_paths']['regulating_es'] = tmp.name
-                logger.info(f"Regulating ES uploaded: {tmp.name}")
-                # Validate and rescale if needed
-                _validate_layer('regulating_es', tmp.name)
-        else:
-            st.session_state['criterion_raster_paths'].pop('regulating_es', None)
-            st.session_state['validation_reports'].pop('regulating_es', None)
-
-        # Anthropogenic pressure
-        pressure_file = st.file_uploader(
-            "Anthropogenic pressure (hab/km²)",
-            type=['tif', 'tiff'],
-            key='pressure_upload',
-            help="Human population density or composite anthropogenic pressure index"
+        _layer_path_input(
+            'anthropogenic_pressure', "Anthropogenic pressure (hab/km²)",
+            r"C:\data\anthropogenic_pressure.tif",
+            "Human population density or composite anthropogenic pressure index. Raw values accepted."
         )
-
-        if pressure_file is not None:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
-                tmp.write(pressure_file.read())
-                tmp.flush()
-                st.session_state['criterion_raster_paths']['anthropogenic_pressure'] = tmp.name
-                logger.info(f"Anthropogenic pressure uploaded: {tmp.name}")
-                # Validate and rescale if needed
-                _validate_layer('anthropogenic_pressure', tmp.name)
-        else:
-            st.session_state['criterion_raster_paths'].pop('anthropogenic_pressure', None)
-            st.session_state['validation_reports'].pop('anthropogenic_pressure', None)
 
     with col_right:
         st.markdown("#### Group B — Co-benefits")
-
-        # Cultural ES
-        cultural_es_file = st.file_uploader(
-            "Cultural ES capacity [0-1]",
-            type=['tif', 'tiff'],
-            key='cult_es_upload',
-            help="Cultural ecosystem services capacity (e.g., recreation, landscape aesthetics)"
+        _layer_path_input(
+            'cultural_es', "Cultural ES capacity [0–1]",
+            r"C:\data\cultural_es.tif",
+            "Cultural ecosystem services capacity (e.g. recreation, landscape aesthetics)."
         )
-
-        if cultural_es_file is not None:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
-                tmp.write(cultural_es_file.read())
-                tmp.flush()
-                st.session_state['criterion_raster_paths']['cultural_es'] = tmp.name
-                logger.info(f"Cultural ES uploaded: {tmp.name}")
-                # Validate and rescale if needed
-                _validate_layer('cultural_es', tmp.name)
-        else:
-            st.session_state['criterion_raster_paths'].pop('cultural_es', None)
-            st.session_state['validation_reports'].pop('cultural_es', None)
-
         st.markdown("#### Group C — Production Function")
-
-        # Provisioning ES
-        provisioning_es_file = st.file_uploader(
-            "Provisioning ES capacity [0-1]",
-            type=['tif', 'tiff'],
-            key='prov_es_upload',
-            help="Provisioning ecosystem services capacity (e.g., food, timber, water supply)"
+        _layer_path_input(
+            'provisioning_es', "Provisioning ES capacity [0–1]",
+            r"C:\data\provisioning_es.tif",
+            "Provisioning ecosystem services capacity (e.g. food, timber, water supply)."
         )
-
-        if provisioning_es_file is not None:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
-                tmp.write(provisioning_es_file.read())
-                tmp.flush()
-                st.session_state['criterion_raster_paths']['provisioning_es'] = tmp.name
-                logger.info(f"Provisioning ES uploaded: {tmp.name}")
-                # Validate and rescale if needed
-                _validate_layer('provisioning_es', tmp.name)
-        else:
-            st.session_state['criterion_raster_paths'].pop('provisioning_es', None)
-            st.session_state['validation_reports'].pop('provisioning_es', None)
-
-        # Land use / land cover — path input (CLC is >200 MB, too large to upload)
-        st.markdown("**Land use / land cover (categorical)**")
-        st.caption(
-            "Corine Land Cover 2018 recommended. "
-            "Provide the local file path — CLC is typically >600 MB and cannot be uploaded directly."
+        _layer_path_input(
+            'landuse', "Land use / land cover — CLC 2018 (categorical)",
+            r"C:\data\CLC2018_CLC2018_V2018_20.tif",
+            "Corine Land Cover 2018 GeoTIFF. Download free from "
+            "https://land.copernicus.eu/pan-european/corine-land-cover"
         )
-        landuse_path = st.text_input(
-            "Local file path to CLC GeoTIFF",
-            key='landuse_path_input',
-            placeholder=r"C:\data\CLC2018_CLC2018_V2018_20.tif",
-            help=(
-                "Paste the full path to your Corine Land Cover 2018 GeoTIFF. "
-                "Download free from https://land.copernicus.eu/pan-european/corine-land-cover"
-            )
-        )
-
-        if landuse_path and Path(landuse_path).is_file():
-            st.session_state['criterion_raster_paths']['landuse'] = landuse_path
-            st.success(f"✓ Found: {Path(landuse_path).name}")
-            logger.info(f"Land use path set: {landuse_path}")
-            # Validate land use layer
-            _validate_layer('landuse', landuse_path)
-        elif landuse_path:
-            st.error("File not found — please check the path.")
-            st.session_state['criterion_raster_paths'].pop('landuse', None)
-            st.session_state['validation_reports'].pop('landuse', None)
-        else:
-            st.session_state['criterion_raster_paths'].pop('landuse', None)
-            st.session_state['validation_reports'].pop('landuse', None)
 
     st.markdown("---")
 
