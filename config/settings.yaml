@@ -26,3 +26,9 @@ nuts2:
   default_scale: "20M"   # options: 01M, 03M, 10M, 20M, 60M
   default_country: "FR"
   cache_ttl_seconds: 3600
+
+# Corine Land Cover configuration
+clc:
+  default_config: "config/clc_reclassification.yaml"
+  nodata_values: [0, 128]
+  native_resolution_m: 100
