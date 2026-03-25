@@ -57,7 +57,7 @@ def _validate_layer(criterion_key: str, file_path: str) -> None:
             # Validate and rescale
             rescaled_array, report = validate_and_rescale_layer(
                 array=array,
-                criterion=criterion_key,
+                criterion_key=criterion_key,
                 profile=profile
             )
 
