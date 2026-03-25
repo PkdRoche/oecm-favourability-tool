@@ -48,6 +48,29 @@ st.markdown(
 st.markdown("---")
 
 # ===================================================================
+# Global CSS — larger, bolder tab labels
+# ===================================================================
+st.markdown(
+    """
+    <style>
+    /* Tab labels */
+    .stTabs [data-baseweb="tab"] {
+        font-size: 1.1rem;
+        font-weight: 600;
+        padding: 0.6rem 1.4rem;
+        letter-spacing: 0.01em;
+    }
+    /* Active tab underline accent */
+    .stTabs [aria-selected="true"] {
+        border-bottom: 3px solid #2e7d32;
+        color: #2e7d32;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ===================================================================
 # Sidebar: render parameter panel and store in session state
 # ===================================================================
 with st.sidebar:
