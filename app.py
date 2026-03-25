@@ -20,6 +20,25 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Large, bold tab labels — close to title font size
+st.markdown(
+    """
+    <style>
+    .stTabs [data-baseweb="tab-list"] { gap: 12px; }
+    .stTabs [data-baseweb="tab"] {
+        font-size: 1.25rem;
+        font-weight: 700;
+        padding: 12px 28px;
+    }
+    .stTabs [aria-selected="true"] {
+        border-bottom: 3px solid #2E7D32;
+        color: #2E7D32;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # ===================================================================
 # Import UI components
 # ===================================================================
