@@ -69,7 +69,15 @@ def load_raster(path: str) -> tuple[np.ndarray, dict]:
     if array.size == 0:
         raise ValueError(f"Empty raster array loaded from {path}")
 
-    logger.info(f"Loaded raster with shape {array.shape}, dtype {array.dtype}")
+    # If CRS is missing, assume EPSG:3035 (tool requirement) and warn
+    if profile.get('crs') is None:
+        logger.warning(
+            f"Raster '{Path(path).name}' has no embedded CRS. "
+            "Assuming EPSG:3035 — please verify this is correct."
+        )
+        profile['crs'] = 'EPSG:3035'
+
+    logger.info(f"Loaded raster with shape {array.shape}, dtype {array.dtype}, CRS {profile['crs']}")
     return array, profile
 
 
@@ -866,13 +874,24 @@ def validate_and_rescale_layer(
             f"Must be one of: {valid_criteria}"
         )
 
-    # Calculate min/max ignoring NaN
-    valid_mask = ~np.isnan(array)
-    if not np.any(valid_mask):
-        raise ValueError(f"Array for '{criterion_key}' contains only NaN values")
+    # Strip common NoData sentinel values BEFORE range check:
+    # -99999, -9999 (float layers), -32768, -32767 (int16), 0 (CLC nodata)
+    NODATA_SENTINELS = {-99999.0, -9999.0, -32768.0, -32767.0}
+    array_work = array.astype(np.float64)
+    for sentinel in NODATA_SENTINELS:
+        array_work[array_work == sentinel] = np.nan
+    # For CLC, 0 and 128 are also NoData
+    if criterion_key == 'landuse':
+        array_work[array_work == 0] = np.nan
+        array_work[array_work == 128] = np.nan
 
-    original_min = float(np.nanmin(array))
-    original_max = float(np.nanmax(array))
+    # Calculate min/max ignoring NaN
+    valid_mask = ~np.isnan(array_work)
+    if not np.any(valid_mask):
+        raise ValueError(f"Array for '{criterion_key}' contains only NaN/NoData values")
+
+    original_min = float(np.nanmin(array_work))
+    original_max = float(np.nanmax(array_work))
 
     logger.info(f"Original value range: [{original_min:.4f}, {original_max:.4f}]")
 

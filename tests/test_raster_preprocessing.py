@@ -915,7 +915,7 @@ def test_validate_all_nan_raises_error():
         'transform': rasterio.transform.from_bounds(0, 0, 300, 100, 3, 1)
     }
 
-    with pytest.raises(ValueError, match="only NaN values"):
+    with pytest.raises(ValueError, match="only NaN/NoData values"):
         validate_and_rescale_layer(test_array, test_profile, 'ecosystem_condition')
 
 
