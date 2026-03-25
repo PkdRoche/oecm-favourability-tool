@@ -326,6 +326,27 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
             }
         )
 
+        # IUCN category breakdown
+        st.markdown("#### Coverage by IUCN Category")
+        if 'IUCN_CAT' in pa_gdf.columns:
+            iucn_rows = []
+            for cat, grp in pa_gdf.groupby('IUCN_CAT'):
+                net_area = grp.geometry.union_all().area / 10000.0
+                iucn_rows.append({
+                    'IUCN Category': cat,
+                    'Area (ha)': f"{net_area:,.0f}",
+                    '% Territory': f"{net_area / territory_area_ha * 100:.2f}%",
+                    'Sites': len(grp)
+                })
+            iucn_rows.append({
+                'IUCN Category': 'TOTAL',
+                'Area (ha)': f"{pa_gdf.geometry.union_all().area / 10000.0:,.0f}",
+                '% Territory': f"{pa_gdf.geometry.union_all().area / 10000.0 / territory_area_ha * 100:.2f}%",
+                'Sites': len(pa_gdf)
+            })
+            import pandas as pd
+            st.dataframe(pd.DataFrame(iucn_rows), hide_index=True, use_container_width=True)
+
     with col_right:
         st.markdown("#### Ecosystem Representativity")
 
@@ -548,12 +569,25 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
 
                 # Row 1: Grouped bar chart
                 st.markdown("#### Mean Criterion Scores by Protection Class")
+                st.caption(
+                    "All criteria normalised to [0–1] for display. "
+                    "Anthropogenic pressure is inverted (lower raw value = higher score)."
+                )
 
                 try:
                     import plotly.express as px
 
-                    # Prepare data for grouped bar chart
+                    # Normalise each criterion to [0-1] for comparable display
                     chart_data = zonal_df[['criterion', 'pa_class', 'mean']].copy()
+                    for crit in chart_data['criterion'].unique():
+                        mask = chart_data['criterion'] == crit
+                        vals = chart_data.loc[mask, 'mean']
+                        vmin, vmax = vals.min(), vals.max()
+                        if vmax > vmin:
+                            chart_data.loc[mask, 'mean'] = (vals - vmin) / (vmax - vmin)
+                        # Invert anthropogenic pressure (high pressure = bad)
+                        if crit == 'anthropogenic_pressure':
+                            chart_data.loc[mask, 'mean'] = 1.0 - chart_data.loc[mask, 'mean']
 
                     # Sort PA classes: protection classes first, then 'outside'
                     pa_class_order = sorted([c for c in chart_data['pa_class'].unique() if c != 'outside'])
@@ -570,7 +604,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                         category_orders={'pa_class': pa_class_order},
                         labels={
                             'criterion': 'Criterion',
-                            'mean': 'Mean Score',
+                            'mean': 'Normalised Score [0–1]',
                             'pa_class': 'Protection Class'
                         },
                         title='',
