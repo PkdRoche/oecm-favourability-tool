@@ -182,13 +182,15 @@ def yager_owa(
        where n is the number of criteria and j = 1, ..., n.
     3. Compute final score: S = sum(v_j * b_j)
 
-    The criterion importance weights affect which criteria contribute more
-    heavily to the aggregation by being applied before sorting, but to keep
-    results in [0,1] range with the expected min/max behaviour at alpha=0/1,
-    we use raw values for OWA and importance weights only affect tie-breaking.
+    Implements Weighted OWA (WOWA): criterion importance weights and OWA
+    position weights are combined so that both the rank order of values AND
+    the user-assigned importance of each criterion influence the final score.
+    For each pixel, the combined weight at position j is proportional to
+    owa_position_weight_j × importance_weight_of_criterion_ranked_j,
+    normalised to sum to 1. This ensures W_A/W_B/W_C settings are respected.
 
-    For alpha=0 (AND): result equals the minimum criterion value.
-    For alpha=1 (OR): result equals the maximum criterion value.
+    For alpha=0 (AND): result equals the value of the lowest-ranked criterion,
+    weighted by its importance. For alpha=1 (OR): result equals the maximum.
 
     Examples
     --------
@@ -230,45 +232,47 @@ def yager_owa(
 
     n = len(arrays)
     arrays_float = [arr.astype(np.float64) for arr in arrays]
+    weights_arr = np.array(weights, dtype=np.float64)  # criterion importance weights
 
     # Build NaN mask
     nan_mask = np.zeros(reference_shape, dtype=bool)
     for arr in arrays_float:
         nan_mask |= np.isnan(arr)
 
-    # Step 1: Stack raw values and sort per pixel in descending order
-    # (Importance weights are orthogonal to OWA position weights per spec)
+    # Step 1: Stack values and sort per pixel in descending order
     stacked = np.stack(arrays_float, axis=-1)  # Shape: (..., n)
-    sorted_values = np.sort(stacked, axis=-1)[..., ::-1]  # Descending
+    sort_idx = np.argsort(stacked, axis=-1)[..., ::-1]  # indices of descending values
+    sorted_values = np.take_along_axis(stacked, sort_idx, axis=-1)
 
-    # Step 2: Compute OWA position weights using Yager's formula
-    # v_j = (j/n)^(1-alpha) - ((j-1)/n)^(1-alpha) for j = 1, ..., n
-    # Note: j is 1-indexed, so for position 0 in array we use j=1
-
+    # Step 2: OWA position weights (Yager's formula)
     if alpha == 0.0:
-        # Pure AND: result is minimum (last position after desc sort)
         owa_weights = np.zeros(n)
-        owa_weights[-1] = 1.0
+        owa_weights[-1] = 1.0   # all weight on minimum
     elif alpha == 1.0:
-        # Pure OR: result is maximum (first position after desc sort)
         owa_weights = np.zeros(n)
-        owa_weights[0] = 1.0
+        owa_weights[0] = 1.0    # all weight on maximum
     else:
-        # General case: Yager's OWA weights
         exponent = 1.0 - alpha
-        owa_weights = np.zeros(n)
-        for j in range(1, n + 1):
-            owa_weights[j - 1] = (j / n) ** exponent - ((j - 1) / n) ** exponent
+        owa_weights = np.array(
+            [(j / n) ** exponent - ((j - 1) / n) ** exponent for j in range(1, n + 1)]
+        )
 
     logger.debug(f"OWA position weights: {owa_weights}")
 
-    # Step 3: Compute weighted sum: S = sum(v_j * b_j)
-    result = np.sum(sorted_values * owa_weights, axis=-1)
+    # Step 3: Weighted OWA — combine criterion importance weights with position weights.
+    # For each pixel, the criterion that ranks j-th by value gets combined weight
+    # proportional to both its OWA position weight AND its criterion importance weight.
+    # This ensures W_A, W_B, W_C (or intra-group weights) are actually respected.
+    #
+    # sorted_importance[..., j] = importance weight of the criterion ranked j-th at each pixel
+    sorted_importance = weights_arr[sort_idx]            # shape (..., n)
+    combined = owa_weights * sorted_importance           # element-wise, shape (..., n)
+    sum_combined = combined.sum(axis=-1, keepdims=True)  # shape (..., 1)
+    # Normalise so combined weights sum to 1 for each pixel
+    combined_norm = np.where(sum_combined > 0, combined / sum_combined, owa_weights)
 
-    # Ensure result is in [0, 1]
+    result = np.sum(sorted_values * combined_norm, axis=-1)
     result = np.clip(result, 0.0, 1.0)
-
-    # Apply NaN mask
     result[nan_mask] = np.nan
 
     logger.info(f"OWA complete. Range: [{np.nanmin(result):.4f}, {np.nanmax(result):.4f}]")
