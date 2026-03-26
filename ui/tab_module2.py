@@ -210,7 +210,7 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
                 image=f"data:image/png;base64,{img_base64}",
                 bounds=[[bounds_4326[1], bounds_4326[0]],  # SW corner
                         [bounds_4326[3], bounds_4326[2]]],  # NE corner
-                opacity=0.75,
+                opacity=0.9,
                 name='Favourability Score'
             ).add_to(m)
 
