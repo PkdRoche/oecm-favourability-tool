@@ -235,7 +235,11 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
             # Add WDPA protected areas if available
             wdpa_gdf = st.session_state.get('pa_gdf')
             if wdpa_gdf is not None:
-                wdpa_gdf_4326 = wdpa_gdf.to_crs('EPSG:4326')
+                # Deduplicate column names (WDPA shapefiles can have duplicates)
+                wdpa_clean = wdpa_gdf.copy()
+                if wdpa_clean.columns.duplicated().any():
+                    wdpa_clean = wdpa_clean.loc[:, ~wdpa_clean.columns.duplicated()]
+                wdpa_gdf_4326 = wdpa_clean[['geometry']].to_crs('EPSG:4326')
 
                 folium.GeoJson(
                     wdpa_gdf_4326,
