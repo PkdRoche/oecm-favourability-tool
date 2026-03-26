@@ -244,15 +244,21 @@ def potential_corridors(
     buffer_distance = max_gap_m / 2.0
     pa_buffers = pa_gdf.copy()
     pa_buffers['geometry'] = pa_buffers.geometry.buffer(buffer_distance)
+    pa_buffers = pa_buffers.reset_index(drop=True)
 
-    # Find overlapping buffer areas
-    # Iterate through pairs of buffered PAs
+    # Find overlapping buffer pairs using spatial index (R-tree).
+    # Replaces O(n²) brute-force loop with O(n·k) where k = avg neighbours.
     corridor_candidates = []
+    sindex = pa_buffers.sindex
+    geoms = pa_buffers.geometry
 
-    for i in range(len(pa_buffers)):
-        for j in range(i + 1, len(pa_buffers)):
-            intersection = pa_buffers.iloc[i].geometry.intersection(pa_buffers.iloc[j].geometry)
-
+    for i, geom_i in enumerate(geoms):
+        # R-tree candidate query — returns indices whose bounding boxes overlap
+        candidate_idxs = sindex.query(geom_i, predicate='intersects')
+        for j in candidate_idxs:
+            if j <= i:          # Skip self and already-processed pairs
+                continue
+            intersection = geom_i.intersection(geoms.iloc[j])
             if not intersection.is_empty:
                 corridor_candidates.append(intersection)
 

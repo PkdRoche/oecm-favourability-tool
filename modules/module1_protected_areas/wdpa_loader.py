@@ -318,36 +318,39 @@ def classify_iucn(
         logger.warning("Neither DESIG nor DESIG_ENG found, creating empty column")
         gdf['DESIG'] = ''
 
-    # Initialize protection_class column
-    gdf['protection_class'] = 'unassigned'
-
     # Extract classes from configuration
     classes = classification_table.get('classes', {})
 
-    # Classify each row
-    for idx, row in gdf.iterrows():
-        iucn_cat = str(row.get('IUCN_CAT', '')).strip()
-        desig = str(row.get('DESIG', '')).strip()
+    # Pre-build flat IUCN-cat → class_name lookup for O(1) matching
+    iucn_lookup: dict = {}
+    for class_name, class_config in classes.items():
+        for cat in class_config.get('iucn_cats', []):
+            iucn_lookup.setdefault(cat, class_name)   # first match wins
 
-        # Try to match against each class
-        matched = False
-        for class_name, class_config in classes.items():
-            # Check IUCN category match
-            if iucn_cat in class_config.get('iucn_cats', []):
-                gdf.at[idx, 'protection_class'] = class_name
-                matched = True
-                break
+    # Pre-lowercase designation keywords to avoid repeated .lower() calls
+    desig_rules = [
+        (class_name, [kw.lower() for kw in class_config.get('desig_keywords', [])])
+        for class_name, class_config in classes.items()
+    ]
 
-            # Check designation keyword match
-            desig_keywords = class_config.get('desig_keywords', [])
-            for keyword in desig_keywords:
-                if keyword.lower() in desig.lower():
-                    gdf.at[idx, 'protection_class'] = class_name
-                    matched = True
-                    break
+    def _classify(iucn_cat: str, desig: str) -> str:
+        """Classify a single PA row. Called via list-comprehension (no iterrows)."""
+        # 1. Fast IUCN category lookup
+        result = iucn_lookup.get(iucn_cat)
+        if result:
+            return result
+        # 2. Designation keyword scan
+        desig_lower = desig.lower()
+        for class_name, keywords in desig_rules:
+            for kw in keywords:
+                if kw in desig_lower:
+                    return class_name
+        return 'unassigned'
 
-            if matched:
-                break
+    # Vectorised classification — list comprehension avoids per-row Series overhead
+    iucn_cats = gdf['IUCN_CAT'].astype(str).str.strip().tolist()
+    desigs    = gdf['DESIG'].astype(str).str.strip().tolist()
+    gdf['protection_class'] = [_classify(ic, d) for ic, d in zip(iucn_cats, desigs)]
 
     logger.info(
         f"Classification complete. Distribution:\n"

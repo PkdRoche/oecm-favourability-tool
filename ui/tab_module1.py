@@ -255,32 +255,37 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
         tiles='OpenStreetMap'
     )
 
-    # Add PA polygons coloured by protection class
-    for _, row in pa_gdf_4326.iterrows():
-        # Get colour for this class
-        class_name = row.get('protection_class', 'unassigned')
-        class_info = iucn_classes.get(class_name, {})
-        colour = class_info.get('colour', '#B4B2A9')
+    # Pre-compute area in ha from EPSG:3035 (metric, accurate) and attach to 4326 copy
+    pa_display = pa_gdf_4326.copy()
+    pa_display['area_ha'] = (pa_gdf.geometry.area / 10000).round(2).values
 
-        # Prepare popup content
-        popup_html = f"""
-        <b>Name:</b> {row.get('WDPA_NAME', row.get('name', 'Unnamed'))}<br>
-        <b>Class:</b> {class_info.get('label', class_name)}<br>
-        <b>Area:</b> {row.geometry.area / 10000:.2f} ha<br>
-        <b>IUCN Category:</b> {row.get('IUCN_CAT', 'Not reported')}
-        """
+    # Build colour lookup once
+    _colour_map = {
+        cn: iucn_classes.get(cn, {}).get('colour', '#B4B2A9')
+        for cn in pa_display['protection_class'].unique()
+    } if 'protection_class' in pa_display.columns else {}
 
-        # Add polygon to map
-        folium.GeoJson(
-            row.geometry,
-            style_function=lambda x, colour=colour: {
-                'fillColor': colour,
-                'color': colour,
-                'weight': 1,
-                'fillOpacity': 0.5
-            },
-            popup=folium.Popup(popup_html, max_width=300)
-        ).add_to(m)
+    # Single GeoJson layer (replaces one folium object per PA — massive speed-up)
+    tooltip_fields   = [c for c in ['WDPA_NAME', 'protection_class', 'IUCN_CAT', 'area_ha']
+                        if c in pa_display.columns]
+    tooltip_aliases  = [a for c, a in [('WDPA_NAME', 'Name'), ('protection_class', 'Class'),
+                                        ('IUCN_CAT', 'IUCN Cat.'), ('area_ha', 'Area (ha)')]
+                        if c in pa_display.columns]
+
+    folium.GeoJson(
+        pa_display,
+        style_function=lambda feature: {
+            'fillColor': _colour_map.get(
+                feature['properties'].get('protection_class', 'unassigned'), '#B4B2A9'
+            ),
+            'color': _colour_map.get(
+                feature['properties'].get('protection_class', 'unassigned'), '#B4B2A9'
+            ),
+            'weight': 1,
+            'fillOpacity': 0.5
+        },
+        tooltip=folium.GeoJsonTooltip(fields=tooltip_fields, aliases=tooltip_aliases)
+    ).add_to(m)
 
     # Add legend
     legend_html = """
@@ -344,6 +349,8 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
         # IUCN category breakdown
         st.markdown("#### Coverage by IUCN Category")
         if 'IUCN_CAT' in pa_gdf.columns:
+            # Compute total union once — reused for TOTAL row (avoids 3× union_all)
+            total_pa_area_ha = pa_gdf.geometry.union_all().area / 10000.0
             iucn_rows = []
             for cat, grp in pa_gdf.groupby('IUCN_CAT'):
                 net_area = grp.geometry.union_all().area / 10000.0
@@ -355,8 +362,8 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                 })
             iucn_rows.append({
                 'IUCN Category': 'TOTAL',
-                'Area (ha)': f"{pa_gdf.geometry.union_all().area / 10000.0:,.0f}",
-                '% Territory': f"{pa_gdf.geometry.union_all().area / 10000.0 / territory_area_ha * 100:.2f}%",
+                'Area (ha)': f"{total_pa_area_ha:,.0f}",
+                '% Territory': f"{total_pa_area_ha / territory_area_ha * 100:.2f}%",
                 'Sites': len(pa_gdf)
             })
             import pandas as pd

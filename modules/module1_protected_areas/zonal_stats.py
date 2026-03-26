@@ -115,17 +115,19 @@ def zonal_stats_by_pa_class(
                 # Get PA classes
                 pa_classes = pa_gdf['protection_class'].unique()
 
+                # Reproject entire PA GeoDataFrame once (not once per class)
+                if str(raster_crs).upper() != 'EPSG:3035':
+                    logger.warning(
+                        f"Raster CRS ({raster_crs}) differs from EPSG:3035. "
+                        f"Reprojecting PA geometries once for all classes."
+                    )
+                    pa_gdf_masked = pa_gdf.to_crs(raster_crs)
+                else:
+                    pa_gdf_masked = pa_gdf
+
                 # Process each PA class
                 for pa_class in pa_classes:
-                    class_gdf = pa_gdf[pa_gdf['protection_class'] == pa_class].copy()
-
-                    # Reproject PA geometries if raster CRS differs
-                    if str(raster_crs).upper() != 'EPSG:3035':
-                        logger.warning(
-                            f"Raster CRS ({raster_crs}) differs from EPSG:3035. "
-                            f"Reprojecting PA geometries for masking."
-                        )
-                        class_gdf = class_gdf.to_crs(raster_crs)
+                    class_gdf = pa_gdf_masked[pa_gdf_masked['protection_class'] == pa_class]
 
                     # Union all geometries for this class to avoid overlap
                     union_geom = unary_union(class_gdf.geometry)
@@ -177,13 +179,8 @@ def zonal_stats_by_pa_class(
                 # Compute statistics for areas OUTSIDE all PAs
                 logger.info(f"Computing statistics for areas outside PAs ({criterion_name})")
 
-                # Union all PA geometries
-                all_pa_union = unary_union(pa_gdf.geometry)
-
-                # Reproject if needed
-                if str(raster_crs).upper() != 'EPSG:3035':
-                    pa_gdf_reproj = pa_gdf.to_crs(raster_crs)
-                    all_pa_union = unary_union(pa_gdf_reproj.geometry)
+                # Reuse already-reprojected GeoDataFrame — union computed once
+                all_pa_union = unary_union(pa_gdf_masked.geometry)
 
                 # Read entire raster
                 raster_data = src.read(1)

@@ -173,81 +173,72 @@ with tab3:
             )
 
         if run_button:
-            with st.spinner("Loading and preprocessing raster layers..."):
+            with st.spinner("Loading and aligning raster layers (cached after first run)..."):
                 try:
                     # Import required modules
                     from modules.module2_favourability import raster_preprocessing
                     from modules.module2_favourability import mce_engine
-
-                    # Load rasters from stored paths
-                    @st.cache_data
-                    def load_raster_from_path(raster_path):
-                        """Load raster from file path."""
-                        return raster_preprocessing.load_raster(raster_path)
-
-                    # Load all layers
-                    eco_array, eco_profile = load_raster_from_path(raster_paths['ecosystem_condition'])
-                    reg_array, reg_profile = load_raster_from_path(raster_paths['regulating_es'])
-                    pressure_array, pressure_profile = load_raster_from_path(raster_paths['anthropogenic_pressure'])
-                    cult_array, cult_profile = load_raster_from_path(raster_paths['cultural_es'])
-                    prov_array, prov_profile = load_raster_from_path(raster_paths['provisioning_es'])
-                    landuse_array, landuse_profile = load_raster_from_path(raster_paths['landuse'])
-
-                    st.success("All layers loaded successfully!")
-
-                except Exception as e:
-                    st.error(f"Raster loading failed: {str(e)}")
-                    logger.exception("Raster loading error:")
-                    st.stop()
-
-            with st.spinner("Aligning rasters to common grid..."):
-                try:
-                    # Load settings for resolution and CRS
                     import yaml
                     from pathlib import Path
+
+                    # Load settings for resolution and CRS
                     settings_path = Path(__file__).parent / "config" / "settings.yaml"
                     with open(settings_path, 'r') as f:
                         settings = yaml.safe_load(f)
 
                     target_resolution = settings.get('resolution_m', 100.0)
                     target_crs = settings.get('crs', 'EPSG:3035')
-
-                    # Get study area geometry from parameters
                     study_area_geom = parameters.get('study_area_geometry')
 
-                    # Align all rasters
-                    raster_dict = {
-                        'ecosystem_condition': (eco_array, eco_profile),
-                        'regulating_es': (reg_array, reg_profile),
-                        'anthropogenic_pressure': (pressure_array, pressure_profile),
-                        'cultural_es': (cult_array, cult_profile),
-                        'provisioning_es': (prov_array, prov_profile),
-                        'landuse': (landuse_array, landuse_profile)
-                    }
+                    # -------------------------------------------------------
+                    # Cached load + align: only re-runs when files or study
+                    # area change. Changing weights/method/threshold does NOT
+                    # trigger re-alignment (major speed-up on every re-run).
+                    # -------------------------------------------------------
+                    @st.cache_data(show_spinner=False)
+                    def _load_and_align(paths_frozen, study_area_wkt, resolution, crs):
+                        """Load and align all rasters. Cache key = paths + study area."""
+                        from shapely.wkt import loads as _wkt_loads
+                        from modules.module2_favourability import raster_preprocessing as _rp
+                        sa_geom = _wkt_loads(study_area_wkt) if study_area_wkt else None
+                        raster_dict = {}
+                        for name, path in paths_frozen:
+                            arr, prof = _rp.load_raster(path)
+                            raster_dict[name] = (arr, prof)
+                        return _rp.align_rasters(
+                            raster_dict,
+                            study_area_geom=sa_geom,
+                            resolution=resolution,
+                            crs=crs
+                        )
 
-                    # Align using study area geometry as reference grid
-                    aligned = raster_preprocessing.align_rasters(
-                        raster_dict,
-                        study_area_geom=study_area_geom,
-                        resolution=target_resolution,
-                        crs=target_crs
+                    # Build hashable cache key
+                    layer_order = [
+                        'ecosystem_condition', 'regulating_es',
+                        'anthropogenic_pressure', 'cultural_es',
+                        'provisioning_es', 'landuse'
+                    ]
+                    paths_frozen = tuple((k, raster_paths[k]) for k in layer_order)
+                    study_area_wkt = study_area_geom.wkt if study_area_geom else ''
+
+                    aligned = _load_and_align(
+                        paths_frozen, study_area_wkt, target_resolution, target_crs
                     )
 
                     # Extract aligned arrays
-                    eco_aligned = aligned['ecosystem_condition'][0]
-                    reg_aligned = aligned['regulating_es'][0]
-                    pressure_aligned = aligned['anthropogenic_pressure'][0]
-                    cult_aligned = aligned['cultural_es'][0]
-                    prov_aligned = aligned['provisioning_es'][0]
-                    landuse_aligned = aligned['landuse'][0]
-
-                    # Use first profile as reference
+                    eco_aligned       = aligned['ecosystem_condition'][0]
+                    reg_aligned       = aligned['regulating_es'][0]
+                    pressure_aligned  = aligned['anthropogenic_pressure'][0]
+                    cult_aligned      = aligned['cultural_es'][0]
+                    prov_aligned      = aligned['provisioning_es'][0]
+                    landuse_aligned   = aligned['landuse'][0]
                     reference_profile = aligned['ecosystem_condition'][1]
 
-                    st.success("Rasters aligned to common grid!")
+                    st.success("Rasters loaded and aligned!")
 
                 except Exception as e:
-                    st.error(f"Raster alignment failed: {str(e)}")
+                    st.error(f"Raster loading/alignment failed: {str(e)}")
+                    logger.exception("Raster loading/alignment error:")
                     st.stop()
 
             with st.spinner("Computing favourability scores..."):
