@@ -490,8 +490,40 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
 
         # Helper: filter out empty/null geometries that crash folium
         def _clean_for_folium(gdf):
-            """Remove empty/null geometries and reproject to EPSG:4326."""
+            """Remove empty/null/coordinate-less geometries and reproject to EPSG:4326.
+
+            Folium's get_bounds() calls iter_coords() which expects a
+            'coordinates' key in every GeoJSON feature geometry.  Geometry
+            types like GeometryCollection use 'geometries' instead, causing
+            a KeyError.  We convert GeometryCollections to their union and
+            drop anything that still lacks coordinates.
+            """
+            from shapely.ops import unary_union
+            from shapely.geometry import mapping as _shp_mapping, GeometryCollection
+
             clean = gdf[~gdf.geometry.is_empty & gdf.geometry.notnull()].copy()
+            if len(clean) > 0:
+                # Flatten GeometryCollections → their unary_union
+                def _flatten(geom):
+                    if isinstance(geom, GeometryCollection):
+                        u = unary_union(geom.geoms) if geom.geoms else geom
+                        return u
+                    return geom
+                clean = clean.copy()
+                clean['geometry'] = clean.geometry.apply(_flatten)
+                # Re-filter after flattening
+                clean = clean[~clean.geometry.is_empty & clean.geometry.notnull()]
+
+            if len(clean) > 0:
+                # Final safety: drop any geometry whose GeoJSON lacks 'coordinates'
+                def _has_coords(geom):
+                    try:
+                        m = _shp_mapping(geom)
+                        return 'coordinates' in m
+                    except Exception:
+                        return False
+                clean = clean[clean.geometry.apply(_has_coords)]
+
             if len(clean) > 0 and hasattr(clean, 'to_crs'):
                 clean = clean.to_crs('EPSG:4326')
             return clean
