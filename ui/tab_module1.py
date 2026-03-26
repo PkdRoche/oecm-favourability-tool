@@ -259,6 +259,19 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
     pa_display = pa_gdf_4326.copy()
     pa_display['area_ha'] = (pa_gdf.geometry.area / 10000).round(2).values
 
+    # Deduplicate column names — folium/__geo_interface__ raises ValueError otherwise
+    # (WDPA files sometimes have duplicate columns e.g. two 'NAME' columns)
+    seen = {}
+    new_cols = []
+    for col in pa_display.columns:
+        if col in seen:
+            seen[col] += 1
+            new_cols.append(f"{col}_{seen[col]}")
+        else:
+            seen[col] = 0
+            new_cols.append(col)
+    pa_display.columns = new_cols
+
     # Build colour lookup once
     _colour_map = {
         cn: iucn_classes.get(cn, {}).get('colour', '#B4B2A9')
