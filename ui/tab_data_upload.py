@@ -1,6 +1,7 @@
 """Streamlit UI for Data Upload Tab — centralized input layer management."""
 import streamlit as st
 import tempfile
+import configparser
 from pathlib import Path
 import logging
 import numpy as np
@@ -108,6 +109,85 @@ def _validate_layer(criterion_key: str, file_path: str) -> None:
             }
 
 
+def _save_project_ini(filepath: str) -> None:
+    """Save current layer paths to a .ini project file.
+
+    Parameters
+    ----------
+    filepath : str
+        Output .ini file path.
+    """
+    config = configparser.ConfigParser()
+
+    # WDPA section
+    config['wdpa'] = {}
+    wdpa_path = st.session_state.get('wdpa_file')
+    # Prefer the original path over temp paths
+    original_wdpa = st.session_state.get('_original_wdpa_path', wdpa_path)
+    if original_wdpa:
+        config['wdpa']['path'] = str(original_wdpa)
+
+    # Criterion rasters section
+    config['rasters'] = {}
+    raster_paths = st.session_state.get('criterion_raster_paths', {})
+    original_paths = st.session_state.get('_original_raster_paths', {})
+    for key, path in raster_paths.items():
+        # Prefer the original on-disk path over temp copies
+        config['rasters'][key] = str(original_paths.get(key, path))
+
+    # Settings section
+    config['settings'] = {
+        'exclude_marine_pa': str(st.session_state.get('exclude_marine_pa', True))
+    }
+
+    with open(filepath, 'w') as f:
+        config.write(f)
+    logger.info(f"Project saved to {filepath}")
+
+
+def _load_project_ini(filepath: str) -> dict:
+    """Load layer paths from a .ini project file.
+
+    Parameters
+    ----------
+    filepath : str
+        Input .ini file path.
+
+    Returns
+    -------
+    dict
+        Dictionary with keys: 'wdpa_path', 'raster_paths', 'settings'.
+        Missing files are reported but non-fatal.
+    """
+    config = configparser.ConfigParser()
+    config.read(filepath)
+
+    result = {'wdpa_path': None, 'raster_paths': {}, 'settings': {}, 'errors': []}
+
+    # WDPA
+    wdpa_path = config.get('wdpa', 'path', fallback=None)
+    if wdpa_path and Path(wdpa_path).exists():
+        result['wdpa_path'] = wdpa_path
+    elif wdpa_path:
+        result['errors'].append(f"WDPA file not found: {wdpa_path}")
+
+    # Rasters
+    if config.has_section('rasters'):
+        for key, path in config.items('rasters'):
+            if Path(path).exists():
+                result['raster_paths'][key] = path
+            else:
+                result['errors'].append(f"{key}: file not found — {path}")
+
+    # Settings
+    if config.has_section('settings'):
+        for key, value in config.items('settings'):
+            result['settings'][key] = value
+
+    logger.info(f"Project loaded from {filepath}: {len(result['raster_paths'])} rasters")
+    return result
+
+
 def render():
     """
     Render data upload interface with validation summary.
@@ -137,6 +217,81 @@ def render():
         **All rasters must be in EPSG:3035** (LAEA Europe) with consistent resolution.
         """
     )
+
+    # ===================================================================
+    # Project Save / Load
+    # ===================================================================
+    st.subheader("Project Configuration")
+    st.caption(
+        "Save or load layer paths to avoid re-selecting files on each restart. "
+        "The .ini file stores **file paths only** — no data is copied."
+    )
+
+    col_load, col_save = st.columns(2)
+
+    with col_load:
+        ini_file = st.file_uploader(
+            "Load project (.ini)",
+            type=['ini'],
+            key='project_ini_upload',
+            help="Load a previously saved .ini project file to restore all layer paths."
+        )
+        if ini_file is not None:
+            # Write to temp so configparser can read it
+            ini_content = ini_file.read().decode('utf-8')
+            tmp_ini = Path(tempfile.gettempdir()) / 'oecm_project_load.ini'
+            tmp_ini.write_text(ini_content)
+
+            project = _load_project_ini(str(tmp_ini))
+
+            # Apply loaded paths to session state
+            if 'criterion_raster_paths' not in st.session_state:
+                st.session_state['criterion_raster_paths'] = {}
+            if 'validation_reports' not in st.session_state:
+                st.session_state['validation_reports'] = {}
+            if '_original_raster_paths' not in st.session_state:
+                st.session_state['_original_raster_paths'] = {}
+
+            # WDPA
+            if project['wdpa_path']:
+                st.session_state['wdpa_file'] = project['wdpa_path']
+                st.session_state['_original_wdpa_path'] = project['wdpa_path']
+
+            # Rasters — point directly to on-disk files (no temp copy needed)
+            for key, path in project['raster_paths'].items():
+                st.session_state['criterion_raster_paths'][key] = path
+                st.session_state['_original_raster_paths'][key] = path
+                _validate_layer(key, path)
+
+            # Settings
+            if project['settings'].get('exclude_marine_pa'):
+                st.session_state['exclude_marine_pa'] = (
+                    project['settings']['exclude_marine_pa'].lower() == 'true'
+                )
+
+            # Report
+            n_loaded = len(project['raster_paths'])
+            wdpa_ok = project['wdpa_path'] is not None
+            st.success(
+                f"Project loaded: {n_loaded} raster(s)"
+                f"{', WDPA' if wdpa_ok else ''}"
+            )
+            if project['errors']:
+                for err in project['errors']:
+                    st.warning(f"Missing: {err}")
+
+    with col_save:
+        save_path = st.text_input(
+            "Save project as (.ini)",
+            value=str(Path.home() / 'oecm_project.ini'),
+            help="Choose a path to save the current layer configuration."
+        )
+        if st.button("Save Project"):
+            try:
+                _save_project_ini(save_path)
+                st.success(f"Project saved to `{save_path}`")
+            except Exception as e:
+                st.error(f"Failed to save project: {e}")
 
     # Define required layers (used throughout the render function)
     required_rasters = [
