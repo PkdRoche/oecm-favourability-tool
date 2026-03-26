@@ -449,55 +449,61 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                 qual_gaps_gdf = qualitative_gaps(pa_gdf, territory_geom)
                 corridors_gdf = potential_corridors(pa_gdf, territory_geom, max_gap_m=5000.0)
 
-                # Store in session state
+                # Store layers in session state
                 st.session_state['gap_layers'] = {
                     'strict_gaps': strict_gaps_gdf,
                     'qualitative_gaps': qual_gaps_gdf,
                     'corridors': corridors_gdf
                 }
 
-                # Compute summary statistics
-                strict_area = strict_gaps_gdf.geometry.area.sum() / 10000.0 if len(strict_gaps_gdf) > 0 else 0.0
-                qual_area = qual_gaps_gdf.geometry.area.sum() / 10000.0 if len(qual_gaps_gdf) > 0 else 0.0
-                corridor_area = corridors_gdf.geometry.area.sum() / 10000.0 if len(corridors_gdf) > 0 else 0.0
+                # Compute summary statistics and store — so they survive re-runs
+                strict_area   = strict_gaps_gdf.geometry.area.sum() / 10000.0 if len(strict_gaps_gdf) > 0 else 0.0
+                qual_area     = qual_gaps_gdf.geometry.area.sum() / 10000.0   if len(qual_gaps_gdf)   > 0 else 0.0
+                corridor_area = corridors_gdf.geometry.area.sum() / 10000.0   if len(corridors_gdf)   > 0 else 0.0
 
-                strict_pct = (strict_area / territory_area_ha * 100.0) if territory_area_ha > 0 else 0.0
-                qual_pct = (qual_area / territory_area_ha * 100.0) if territory_area_ha > 0 else 0.0
-                corridor_pct = (corridor_area / territory_area_ha * 100.0) if territory_area_ha > 0 else 0.0
-
-                st.success("Gap analysis complete!")
-
-                col1, col2, col3 = st.columns(3)
-
-                with col1:
-                    st.metric(
-                        "Strict Gaps",
-                        f"{strict_area:,.0f} ha",
-                        f"{strict_pct:.1f}% of territory",
-                        help="Areas with no PA coverage"
-                    )
-
-                with col2:
-                    st.metric(
-                        "Qualitative Gaps",
-                        f"{qual_area:,.0f} ha",
-                        f"{qual_pct:.1f}% of territory",
-                        help="Areas with only weak protection (contractual/unassigned)"
-                    )
-
-                with col3:
-                    st.metric(
-                        "Potential Corridors",
-                        f"{corridor_area:,.0f} ha",
-                        f"{corridor_pct:.1f}% of territory",
-                        help="Unprotected areas connecting PA patches"
-                    )
+                st.session_state['gap_stats'] = {
+                    'strict_area':    strict_area,
+                    'strict_pct':     strict_area   / territory_area_ha * 100.0 if territory_area_ha > 0 else 0.0,
+                    'qual_area':      qual_area,
+                    'qual_pct':       qual_area     / territory_area_ha * 100.0 if territory_area_ha > 0 else 0.0,
+                    'corridor_area':  corridor_area,
+                    'corridor_pct':   corridor_area / territory_area_ha * 100.0 if territory_area_ha > 0 else 0.0,
+                }
 
             except Exception as e:
                 st.error(f"Gap analysis failed: {str(e)}")
 
-    # Display gap map if available
+    # Display statistics + map whenever results are available in session state
+    # (rendered OUTSIDE the button block so they survive Streamlit re-runs)
     if 'gap_layers' in st.session_state:
+
+        # --- Summary metrics (persist across re-runs via session_state) ---
+        if 'gap_stats' in st.session_state:
+            gs = st.session_state['gap_stats']
+            st.success("Gap analysis complete!")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(
+                    "Strict Gaps",
+                    f"{gs['strict_area']:,.0f} ha",
+                    f"{gs['strict_pct']:.1f}% of territory",
+                    help="Areas with no PA coverage"
+                )
+            with col2:
+                st.metric(
+                    "Qualitative Gaps",
+                    f"{gs['qual_area']:,.0f} ha",
+                    f"{gs['qual_pct']:.1f}% of territory",
+                    help="Areas with only weak protection (contractual/unassigned)"
+                )
+            with col3:
+                st.metric(
+                    "Potential Corridors",
+                    f"{gs['corridor_area']:,.0f} ha",
+                    f"{gs['corridor_pct']:.1f}% of territory",
+                    help="Unprotected areas connecting PA patches"
+                )
+
         st.markdown("#### Gap Layers Map")
 
         gap_layers = st.session_state['gap_layers']
