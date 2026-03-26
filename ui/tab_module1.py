@@ -1,5 +1,6 @@
 """Streamlit UI for Module 1 — Protection Network Diagnostic."""
 import streamlit as st
+import numpy as np
 import pandas as pd
 import geopandas as gpd
 import folium
