@@ -752,43 +752,46 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
 
                 # Row 4: CLC land use class breakdown
                 if 'landuse' in st.session_state.get('criterion_raster_paths', {}):
-                    st.markdown("#### Land Use Composition (CLC Classes)")
-                    st.caption("Pixel counts per Corine Land Cover class within each zone.")
+                    st.markdown("#### Land Use Composition (CLC Level 1)")
+                    st.caption("Pixel counts per Corine Land Cover Level 1 category within the study area.")
                     try:
-                        from modules.utils.clc_loader import get_clc_legend
                         import rasterio as _rio
 
-                        clc_legend = get_clc_legend()
+                        # CLC Level 1 labels (first digit of CLC code)
+                        _CLC_LEVEL1_LABELS = {
+                            1: "Urban",
+                            2: "Agricultural",
+                            3: "Shrublands / Mixed",
+                            4: "Forest",
+                            5: "Water",
+                        }
+
                         lu_path = st.session_state['criterion_raster_paths']['landuse']
 
-                        # Get PA class masks from zonal stats session state
-                        # Re-read just the landuse raster to get categorical breakdown
                         with _rio.open(lu_path) as src:
                             lu_array = src.read(1).astype(float)
                             lu_nodata = src.nodata
                         if lu_nodata is not None:
                             lu_array[lu_array == lu_nodata] = np.nan
 
-                        # Count pixels per CLC code
+                        # Aggregate to Level 1 using first digit of CLC code
                         valid_codes = lu_array[~np.isnan(lu_array)].astype(int)
-                        unique_codes, counts = np.unique(valid_codes, return_counts=True)
+                        level1_codes = valid_codes // 100  # 311 → 3, 112 → 1, etc.
+                        unique_l1, counts_l1 = np.unique(level1_codes, return_counts=True)
+                        total_valid = len(valid_codes)
 
-                        # Build display table with CLC labels
                         clc_rows = []
-                        for code, cnt in sorted(zip(unique_codes, counts), key=lambda x: -x[1]):
-                            meta = clc_legend.get(int(code), {})
-                            label = meta.get('label', f'Code {code}')
-                            level1 = meta.get('level1', '')
+                        for l1, cnt in sorted(zip(unique_l1, counts_l1), key=lambda x: -x[1]):
+                            label = _CLC_LEVEL1_LABELS.get(int(l1), f"Unknown ({l1})")
                             clc_rows.append({
-                                'CLC Code': int(code),
-                                'Label': label,
-                                'Level 1': level1,
+                                'Level 1': int(l1),
+                                'Category': label,
                                 'Pixel Count': int(cnt),
-                                '% of area': f"{100.0 * cnt / len(valid_codes):.1f}%"
+                                '% of area': f"{100.0 * cnt / total_valid:.1f}%"
                             })
 
                         clc_table = pd.DataFrame(clc_rows)
-                        st.dataframe(clc_table, hide_index=True, width='stretch')
+                        st.dataframe(clc_table, hide_index=True, use_container_width=True)
 
                     except Exception as e:
                         st.caption(f"CLC breakdown unavailable: {e}")
