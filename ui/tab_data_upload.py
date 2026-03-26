@@ -248,6 +248,21 @@ def render():
             help=help_text,
         )
         if uploaded is not None:
+            # Skip re-writing if already stored for this upload (avoid temp file leak)
+            existing_path = st.session_state['criterion_raster_paths'].get(criterion_key)
+            validation_key = f'_validated_{criterion_key}'
+            already_validated = st.session_state.get(validation_key) == uploaded.name
+            if existing_path and already_validated and Path(existing_path).exists():
+                return  # Already processed this file — skip
+
+            # Clean up previous temp file for this criterion
+            if existing_path and Path(existing_path).exists():
+                try:
+                    Path(existing_path).unlink()
+                    logger.debug(f"Cleaned up old temp file: {existing_path}")
+                except OSError:
+                    pass
+
             with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
                 tmp.write(uploaded.read())
                 tmp.flush()
@@ -255,6 +270,14 @@ def render():
                 logger.info(f"{criterion_key} uploaded: {tmp.name}")
                 _validate_layer(criterion_key, tmp.name)
         else:
+            # Clean up temp file when uploader is cleared
+            existing_path = st.session_state['criterion_raster_paths'].get(criterion_key)
+            if existing_path and Path(existing_path).exists():
+                try:
+                    Path(existing_path).unlink()
+                    logger.debug(f"Cleaned up temp file on clear: {existing_path}")
+                except OSError:
+                    pass
             st.session_state['criterion_raster_paths'].pop(criterion_key, None)
             st.session_state['validation_reports'].pop(criterion_key, None)
 
