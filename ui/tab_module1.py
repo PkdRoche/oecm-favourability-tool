@@ -456,18 +456,13 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                     'corridors': corridors_gdf
                 }
 
-                # Compute summary statistics and store — so they survive re-runs
-                strict_area   = strict_gaps_gdf.geometry.area.sum() / 10000.0 if len(strict_gaps_gdf) > 0 else 0.0
-                qual_area     = qual_gaps_gdf.geometry.area.sum() / 10000.0   if len(qual_gaps_gdf)   > 0 else 0.0
-                corridor_area = corridors_gdf.geometry.area.sum() / 10000.0   if len(corridors_gdf)   > 0 else 0.0
-
+                # Store raw areas only — % computed dynamically from current
+                # territory_area_ha at render time (so they stay correct if
+                # the user switches territory without re-running the analysis)
                 st.session_state['gap_stats'] = {
-                    'strict_area':    strict_area,
-                    'strict_pct':     strict_area   / territory_area_ha * 100.0 if territory_area_ha > 0 else 0.0,
-                    'qual_area':      qual_area,
-                    'qual_pct':       qual_area     / territory_area_ha * 100.0 if territory_area_ha > 0 else 0.0,
-                    'corridor_area':  corridor_area,
-                    'corridor_pct':   corridor_area / territory_area_ha * 100.0 if territory_area_ha > 0 else 0.0,
+                    'strict_area':   strict_gaps_gdf.geometry.area.sum() / 10000.0 if len(strict_gaps_gdf) > 0 else 0.0,
+                    'qual_area':     qual_gaps_gdf.geometry.area.sum()   / 10000.0 if len(qual_gaps_gdf)   > 0 else 0.0,
+                    'corridor_area': corridors_gdf.geometry.area.sum()   / 10000.0 if len(corridors_gdf)   > 0 else 0.0,
                 }
 
             except Exception as e:
@@ -481,27 +476,45 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
         if 'gap_stats' in st.session_state:
             gs = st.session_state['gap_stats']
             st.success("Gap analysis complete!")
+
+            # % computed fresh from current territory_area_ha so they are
+            # always consistent with the selected region denominator
+            def _pct(area_ha):
+                return area_ha / territory_area_ha * 100.0 if territory_area_ha > 0 else 0.0
+
+            st.caption(
+                f"Reference territory: **{territory_area_ha:,.0f} ha** "
+                f"({territory_area_ha / 100:.0f} km²) — "
+                "percentages below are relative to this total area."
+            )
+
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric(
                     "Strict Gaps",
                     f"{gs['strict_area']:,.0f} ha",
-                    f"{gs['strict_pct']:.1f}% of territory",
-                    help="Areas with no PA coverage"
+                    f"{_pct(gs['strict_area']):.1f}% of territory",
+                    delta_color="off",
+                    help="Areas with NO PA coverage of any kind. "
+                         "strict_gap% + total_PA_coverage% ≈ 100%."
                 )
             with col2:
                 st.metric(
                     "Qualitative Gaps",
                     f"{gs['qual_area']:,.0f} ha",
-                    f"{gs['qual_pct']:.1f}% of territory",
-                    help="Areas with only weak protection (contractual/unassigned)"
+                    f"{_pct(gs['qual_area']):.1f}% of territory",
+                    delta_color="off",
+                    help="Areas covered ONLY by weak protection classes "
+                         "(contractual / unassigned). Superset of strict gaps."
                 )
             with col3:
                 st.metric(
                     "Potential Corridors",
                     f"{gs['corridor_area']:,.0f} ha",
-                    f"{gs['corridor_pct']:.1f}% of territory",
-                    help="Unprotected areas connecting PA patches"
+                    f"{_pct(gs['corridor_area']):.1f}% of territory",
+                    delta_color="off",
+                    help="Unprotected areas within 5 km of two or more PA patches "
+                         "(potential ecological corridors). Independent of gap metrics."
                 )
 
         st.markdown("#### Gap Layers Map")
