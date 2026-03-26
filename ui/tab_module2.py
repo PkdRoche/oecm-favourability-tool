@@ -327,7 +327,7 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
                 height=350
             )
 
-            st.plotly_chart(fig_hist, use_container_width=True)
+            st.plotly_chart(fig_hist, width='stretch')
 
             if n_oecm == 0:
                 st.warning(
@@ -469,7 +469,7 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
                     )
                 )
 
-                st.plotly_chart(fig_weights, use_container_width=True)
+                st.plotly_chart(fig_weights, width='stretch')
 
                 st.caption(
                     "Effective weight = intra-group weight × inter-group weight. "
@@ -503,7 +503,7 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
             st.dataframe(
                 param_display,
                 hide_index=True,
-                use_container_width=True
+                width='stretch'
             )
 
             st.caption("Full parameter log available at bottom of page.")

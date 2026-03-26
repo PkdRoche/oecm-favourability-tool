@@ -65,7 +65,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
 
     if pa_gdf is None:
         st.info("WDPA file loaded. Click the button below to run the diagnostic.")
-        if st.button("▶ Run Protection Network Diagnostic", type="primary", use_container_width=True):
+        if st.button("▶ Run Protection Network Diagnostic", type="primary", width='stretch'):
             with st.spinner("Loading and classifying protected areas…"):
                 try:
                     from modules.module1_protected_areas.wdpa_loader import (
@@ -102,7 +102,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
     pa_gdf = st.session_state['pa_gdf']
 
     # Button to re-run with fresh data
-    if st.button("↺ Re-run Diagnostic", use_container_width=False):
+    if st.button("↺ Re-run Diagnostic", width='content'):
         st.session_state.pop('pa_gdf', None)
         st.rerun()
 
@@ -331,7 +331,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
         st.dataframe(
             display_df,
             hide_index=True,
-            use_container_width=True,
+            width='stretch',
             column_config={
                 'protection_class': st.column_config.TextColumn('Class'),
                 'area_ha': st.column_config.TextColumn('Area (ha)'),
@@ -359,7 +359,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                 'Sites': len(pa_gdf)
             })
             import pandas as pd
-            st.dataframe(pd.DataFrame(iucn_rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(iucn_rows), hide_index=True, width='stretch')
 
     with col_right:
         st.markdown("#### Ecosystem Representativity")
@@ -380,7 +380,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
             # Display chart using Streamlit bar_chart (simple approach)
             st.bar_chart(
                 chart_data.set_index('ecosystem_type')['coverage_pct'],
-                use_container_width=True
+                width='stretch'
             )
 
             st.caption(
@@ -398,7 +398,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
             st.dataframe(
                 display_ri,
                 hide_index=True,
-                use_container_width=True,
+                width='stretch',
                 column_config={
                     'ecosystem_type': 'Ecosystem Type',
                     'coverage_pct': 'Coverage',
@@ -488,10 +488,19 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
             tiles='OpenStreetMap'
         )
 
+        # Helper: filter out empty/null geometries that crash folium
+        def _clean_for_folium(gdf):
+            """Remove empty/null geometries and reproject to EPSG:4326."""
+            clean = gdf[~gdf.geometry.is_empty & gdf.geometry.notnull()].copy()
+            if len(clean) > 0 and hasattr(clean, 'to_crs'):
+                clean = clean.to_crs('EPSG:4326')
+            return clean
+
         # Add gap layers as toggleable overlays (reproject to 4326)
-        if len(gap_layers['strict_gaps']) > 0:
+        strict_4326 = _clean_for_folium(gap_layers['strict_gaps'])
+        if len(strict_4326) > 0:
             folium.GeoJson(
-                gap_layers['strict_gaps'].to_crs('EPSG:4326') if hasattr(gap_layers['strict_gaps'], 'to_crs') else gap_layers['strict_gaps'],
+                strict_4326,
                 name='Strict Gaps',
                 style_function=lambda x: {
                     'fillColor': '#D0021B',
@@ -501,9 +510,10 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                 }
             ).add_to(m_gaps)
 
-        if len(gap_layers['qualitative_gaps']) > 0:
+        qual_4326 = _clean_for_folium(gap_layers['qualitative_gaps'])
+        if len(qual_4326) > 0:
             folium.GeoJson(
-                gap_layers['qualitative_gaps'].to_crs('EPSG:4326') if hasattr(gap_layers['qualitative_gaps'], 'to_crs') else gap_layers['qualitative_gaps'],
+                qual_4326,
                 name='Qualitative Gaps',
                 style_function=lambda x: {
                     'fillColor': '#F6A623',
@@ -513,9 +523,10 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                 }
             ).add_to(m_gaps)
 
-        if len(gap_layers['corridors']) > 0:
+        corr_4326 = _clean_for_folium(gap_layers['corridors'])
+        if len(corr_4326) > 0:
             folium.GeoJson(
-                gap_layers['corridors'].to_crs('EPSG:4326') if hasattr(gap_layers['corridors'], 'to_crs') else gap_layers['corridors'],
+                corr_4326,
                 name='Potential Corridors',
                 style_function=lambda x: {
                     'fillColor': '#4A90E2',
@@ -528,7 +539,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
         # Add layer control
         folium.LayerControl().add_to(m_gaps)
 
-        st_folium(m_gaps, width=None, height=400)
+        st_folium(m_gaps, width='stretch', height=400)
 
     else:
         st.info("Click 'Run Gap Analysis' to compute and display gap layers.")
@@ -639,7 +650,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                         )
                     )
 
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                 except ImportError:
                     # Fallback to simpler visualization if plotly not available
@@ -665,7 +676,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
 
                     st.dataframe(
                         display_summary,
-                        use_container_width=True
+                        width='stretch'
                     )
 
                 except Exception as e:
@@ -703,7 +714,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                     st.dataframe(
                         detailed_df,
                         hide_index=True,
-                        use_container_width=True
+                        width='stretch'
                     )
 
                 # Row 4: CLC land use class breakdown
@@ -744,7 +755,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                             })
 
                         clc_table = pd.DataFrame(clc_rows)
-                        st.dataframe(clc_table, hide_index=True, use_container_width=True)
+                        st.dataframe(clc_table, hide_index=True, width='stretch')
 
                     except Exception as e:
                         st.caption(f"CLC breakdown unavailable: {e}")
