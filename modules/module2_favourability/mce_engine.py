@@ -310,7 +310,9 @@ def compute_favourability(
     weights: dict,
     method: str = "geometric",
     alpha: float = 0.25,
-    threshold_pressure: float = 150.0
+    threshold_pressure: float = 150.0,
+    gap_bonus: float = 0.0,
+    gap_mask: Optional[np.ndarray] = None
 ) -> dict[str, np.ndarray]:
     """Compute full MCE favourability pipeline.
 
@@ -346,6 +348,14 @@ def compute_favourability(
         Aggregation method: 'geometric' or 'owa'. Default is 'geometric'.
     alpha : float, optional
         Orness parameter for OWA method, in [0, 1]. Default is 0.25.
+    gap_bonus : float, optional
+        Bonus multiplier for pixels identified as conservation gaps by
+        Module 1 gap analysis. Applied as S_final = S × (1 + gap_bonus).
+        Must be in [0, 0.20]. Default is 0.0 (no bonus).
+    gap_mask : np.ndarray or None, optional
+        Boolean array (same shape as input layers) where True indicates
+        pixels within conservation gap zones from Module 1. If None or
+        gap_bonus == 0.0, no bonus is applied.
 
     Returns
     -------
@@ -599,6 +609,31 @@ def compute_favourability(
 
     # Pixels flagged as classical_pa_preferable should have score but be excluded from OECM
     # They are kept in the score array but oecm_mask = False for them
+
+    # =========================================================================
+    # Step 6: Apply gap analysis bonus (optional)
+    # S_final = S × (1 + gap_bonus) for pixels within conservation gaps
+    # =========================================================================
+    if gap_bonus > 0.0 and gap_mask is not None:
+        if gap_mask.shape != reference_shape:
+            logger.warning(
+                f"gap_mask shape {gap_mask.shape} != reference {reference_shape}, "
+                f"skipping gap bonus"
+            )
+        else:
+            # Apply bonus only to eligible, non-NaN pixels within gap zones
+            bonus_pixels = gap_mask & eliminatory_mask & ~np.isnan(final_score)
+            n_bonus = np.sum(bonus_pixels)
+            if n_bonus > 0:
+                final_score[bonus_pixels] *= (1.0 + gap_bonus)
+                # Clamp to [0, 1]
+                final_score[bonus_pixels] = np.clip(final_score[bonus_pixels], 0.0, 1.0)
+                logger.info(
+                    f"Gap bonus applied: {n_bonus} pixels boosted by "
+                    f"factor {1.0 + gap_bonus:.2f}"
+                )
+            else:
+                logger.info("Gap bonus: no eligible pixels in gap zones")
 
     # Return results
     return {

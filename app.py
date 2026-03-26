@@ -273,6 +273,53 @@ with tab3:
                         }
                     }
 
+                    # Build gap mask from Module 1 gap layers (if available)
+                    gap_mask = None
+                    gap_bonus_val = parameters.get('gap_bonus', 0.0)
+                    if gap_bonus_val > 0.0 and 'gap_layers' in st.session_state:
+                        try:
+                            import numpy as np
+                            from rasterio.features import rasterize as _rasterize
+
+                            gap_layers = st.session_state['gap_layers']
+                            target_crs_obj = reference_profile['crs']
+                            target_shape = (reference_profile['height'],
+                                            reference_profile['width'])
+                            target_transform = reference_profile['transform']
+
+                            # Combine strict_gaps + qualitative_gaps into one mask
+                            all_geoms = []
+                            for key in ('strict_gaps', 'qualitative_gaps'):
+                                gdf = gap_layers.get(key)
+                                if gdf is not None and len(gdf) > 0:
+                                    reprojected = gdf.to_crs(target_crs_obj)
+                                    valid = reprojected[
+                                        ~reprojected.geometry.is_empty
+                                        & reprojected.geometry.notnull()
+                                    ]
+                                    all_geoms.extend(
+                                        (geom, 1) for geom in valid.geometry
+                                    )
+
+                            if all_geoms:
+                                gap_raster = _rasterize(
+                                    shapes=all_geoms,
+                                    out_shape=target_shape,
+                                    transform=target_transform,
+                                    fill=0,
+                                    dtype='uint8'
+                                )
+                                gap_mask = gap_raster.astype(bool)
+                                logger.info(
+                                    f"Gap mask built: {np.sum(gap_mask)} gap pixels "
+                                    f"out of {gap_mask.size}"
+                                )
+                            else:
+                                logger.info("No gap geometries found, skipping gap bonus")
+                        except Exception as e:
+                            logger.warning(f"Failed to build gap mask: {e}")
+                            gap_mask = None
+
                     # Run MCE
                     results = mce_engine.compute_favourability(
                         ecosystem_condition=eco_aligned,
@@ -284,7 +331,9 @@ with tab3:
                         weights=weights,
                         method=parameters['method'],
                         alpha=parameters['alpha'],
-                        threshold_pressure=parameters.get('threshold_pressure', 150.0)
+                        threshold_pressure=parameters.get('threshold_pressure', 150.0),
+                        gap_bonus=gap_bonus_val,
+                        gap_mask=gap_mask
                     )
 
                     # Store results in session state
