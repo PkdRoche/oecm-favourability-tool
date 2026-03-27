@@ -403,26 +403,38 @@ def align_rasters(
         # Derive reference grid from geometry
         ref_profile = derive_grid_from_geometry(geom=study_area_geom, resolution=resolution, crs=crs)
 
+        # Build geometry mask ONCE for all layers — True = outside geometry (set to NaN/0)
+        # This replaces the per-layer MemoryFile roundtrip.
+        from rasterio.features import geometry_mask as _geometry_mask
+        try:
+            outside_mask = _geometry_mask(
+                [mapping(study_area_geom)],
+                out_shape=(ref_profile['height'], ref_profile['width']),
+                transform=ref_profile['transform'],
+                all_touched=False,
+                invert=False   # True outside the geometry
+            )
+        except Exception as e:
+            logger.warning(f"Could not build geometry mask: {e}. Layers will not be clipped.")
+            outside_mask = None
+
         aligned = {}
 
         for name, (src_array, src_profile) in raster_dict.items():
             logger.info(f"Clipping and aligning '{name}' to study area grid")
 
-            # Determine resampling method.
-            # 'landuse' is always categorical regardless of stored dtype:
-            # validate_and_rescale_layer saves CLC as float32 (NaN support required),
-            # so dtype-based detection would incorrectly choose bilinear, corrupting codes.
+            # 'landuse' is always categorical regardless of stored dtype.
             is_categorical = (name == 'landuse') or np.issubdtype(src_array.dtype, np.integer)
             resampling_method = Resampling.nearest if is_categorical else Resampling.bilinear
 
             logger.info(f"  dtype={src_array.dtype}, resampling={resampling_method.name}")
 
-            # Create destination array
-            # Use float64 for output to support np.nan
-            dst_dtype = src_array.dtype if is_categorical else np.float64
+            # Use float32 (not float64) for continuous layers — halves memory, sufficient precision.
+            dst_dtype = src_array.dtype if is_categorical else np.float32
+            dst_nodata = np.nan if not is_categorical else 0
             dst_array = np.full(
                 (ref_profile['height'], ref_profile['width']),
-                fill_value=np.nan if not is_categorical else 0,
+                fill_value=dst_nodata,
                 dtype=dst_dtype
             )
 
@@ -435,44 +447,18 @@ def align_rasters(
                 dst_transform=ref_profile['transform'],
                 dst_crs=ref_profile['crs'],
                 resampling=resampling_method,
-                dst_nodata=np.nan if not is_categorical else 0
+                dst_nodata=dst_nodata
             )
 
-            # Apply study area mask (clip to geometry)
-            # Create a temporary in-memory dataset for masking
-            with rasterio.io.MemoryFile() as memfile:
-                with memfile.open(
-                    driver='GTiff',
-                    height=ref_profile['height'],
-                    width=ref_profile['width'],
-                    count=1,
-                    dtype=dst_dtype,
-                    crs=ref_profile['crs'],
-                    transform=ref_profile['transform']
-                ) as dataset:
-                    dataset.write(dst_array, 1)
-
-                    # Apply mask using geometry
-                    try:
-                        masked_array, masked_transform = rasterio_mask(
-                            dataset,
-                            [mapping(study_area_geom)],
-                            crop=False,  # Don't crop, just mask
-                            filled=True,
-                            nodata=np.nan if not is_categorical else 0
-                        )
-
-                        dst_array = masked_array[0]  # Extract first band
-
-                    except Exception as e:
-                        logger.warning(f"Failed to mask '{name}' to study area: {e}. Using unmasked data.")
+            # Apply geometry mask directly via numpy — no MemoryFile needed
+            if outside_mask is not None:
+                if is_categorical:
+                    dst_array[outside_mask] = 0
+                else:
+                    dst_array[outside_mask] = np.nan
 
             # Check coverage (warn if < 80%)
-            if not is_categorical:
-                valid_count = np.sum(~np.isnan(dst_array))
-            else:
-                valid_count = np.sum(dst_array != 0)
-
+            valid_count = np.sum(~np.isnan(dst_array)) if not is_categorical else np.sum(dst_array != 0)
             total_count = dst_array.size
             coverage = valid_count / total_count if total_count > 0 else 0
 

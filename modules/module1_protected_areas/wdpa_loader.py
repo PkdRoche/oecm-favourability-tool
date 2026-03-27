@@ -152,32 +152,52 @@ def load_wdpa_local(path: str) -> gpd.GeoDataFrame:
     import os
     os.environ.setdefault('SHAPE_RESTORE_SHX', 'YES')
 
-    # Handle GDB format (may require layer specification)
-    if path.endswith('.gdb'):
-        # Try to read first layer, or specify layer name
+    suffix = path_obj.suffix.lower()
+
+    # ZIP: extract to a temp dir and recurse on the main vector file
+    if suffix == '.zip':
+        import zipfile, tempfile, os
+        tmp_dir = tempfile.mkdtemp()
+        with zipfile.ZipFile(path, 'r') as zf:
+            zf.extractall(tmp_dir)
+        for ext in ['.gpkg', '.shp', '.geojson', '.gdb']:
+            matches = [
+                os.path.join(tmp_dir, fn)
+                for fn in os.listdir(tmp_dir)
+                if fn.lower().endswith(ext)
+            ]
+            if matches:
+                logger.info(f"Extracted from ZIP: {matches[0]}")
+                return load_wdpa_local(matches[0])
+        raise ValueError(f"No recognised vector file found inside ZIP: {path}")
+
+    # For multi-layer formats (GDB, GPKG) pick the polygon layer explicitly
+    if suffix in ('.gdb', '.gpkg'):
         try:
-            import fiona
-            layers = fiona.listlayers(path)
-            if not layers:
-                raise ValueError(f"No layers found in GDB: {path}")
+            import pyogrio
+            layers = pyogrio.list_layers(path)
+            # layers is an ndarray of (name, geometry_type) pairs
+            layer_names = [row[0] for row in layers]
+        except Exception:
+            try:
+                import fiona
+                layer_names = fiona.listlayers(path)
+            except Exception:
+                layer_names = []
 
-            # Look for polygon layer
-            polygon_layer = None
-            for layer in layers:
-                if 'poly' in layer.lower():
-                    polygon_layer = layer
-                    break
+        if not layer_names:
+            raise ValueError(f"No layers found in {suffix.upper()} file: {path}")
 
-            if polygon_layer is None:
-                polygon_layer = layers[0]
-                logger.warning(f"No polygon layer found, using first layer: {polygon_layer}")
-
-            gdf = gpd.read_file(path, layer=polygon_layer)
-
-        except Exception as e:
-            raise ValueError(f"Failed to read GDB file: {e}")
+        # Prefer any layer whose name contains 'poly'
+        polygon_layer = next(
+            (l for l in layer_names if 'poly' in l.lower()),
+            layer_names[0]
+        )
+        if polygon_layer != layer_names[0]:
+            logger.info(f"Multi-layer file — using polygon layer: {polygon_layer}")
+        gdf = gpd.read_file(path, layer=polygon_layer)
     else:
-        # Standard read for other formats
+        # Standard single-layer formats (.shp, .geojson, …)
         gdf = gpd.read_file(path)
 
     # Standardise column names

@@ -102,30 +102,32 @@ def weighted_geometric_mean(
                 f"Array {i} shape {arr.shape} does not match reference shape {reference_shape}"
             )
 
-    # Convert to float64 and ensure weights are numpy array
-    arrays_float = [arr.astype(np.float64) for arr in arrays]
-    weights_arr = np.array(weights, dtype=np.float64)
+    # Use float32 — sufficient precision for [0,1] scores, half the memory of float64
+    arrays_float = [arr.astype(np.float32) for arr in arrays]
+    weights_arr = np.array(weights, dtype=np.float32)
 
-    # Small floor to avoid log(0): a criterion value of 0 drives the score
-    # very close to 0 but does not nullify it completely.
-    # Hard elimination of pixels is Group D's responsibility, not the aggregator's.
-    EPS = 1e-9
+    EPS = np.float32(1e-9)
 
-    # Build NaN mask (NaN propagates; exact zeros do NOT kill the output)
+    # Build NaN mask once, then compute log-sum in a single accumulator (no per-array temporaries)
     nan_mask = np.zeros(reference_shape, dtype=bool)
     for arr in arrays_float:
         nan_mask |= np.isnan(arr)
 
     valid_mask = ~nan_mask
 
-    # Compute weighted geometric mean in log-space for all non-NaN pixels
-    result = np.full(reference_shape, np.nan, dtype=np.float64)
+    # Compute weighted geometric mean in log-space
+    result = np.full(reference_shape, np.nan, dtype=np.float32)
     if np.any(valid_mask):
-        log_sum = np.zeros(reference_shape, dtype=np.float64)
+        log_sum = np.zeros(reference_shape, dtype=np.float32)
         for arr, w in zip(arrays_float, weights_arr):
-            safe = np.where(valid_mask, np.maximum(arr, EPS), 1.0)
-            log_sum += w * np.where(valid_mask, np.log(safe), 0.0)
-        result = np.where(valid_mask, np.clip(np.exp(log_sum), 0.0, 1.0), np.nan)
+            # Floor to EPS only where valid; elsewhere leave as-is (won't enter result)
+            np.maximum(arr, EPS, out=arr)
+            np.log(arr, out=arr)
+            arr *= w
+            log_sum += arr
+        np.exp(log_sum, out=log_sum)
+        np.clip(log_sum, 0.0, 1.0, out=log_sum)
+        result[valid_mask] = log_sum[valid_mask]
 
     logger.info(f"Geometric mean complete. Range: [{np.nanmin(result):.4f}, {np.nanmax(result):.4f}]")
     return result
@@ -231,45 +233,44 @@ def yager_owa(
             )
 
     n = len(arrays)
-    arrays_float = [arr.astype(np.float64) for arr in arrays]
-    weights_arr = np.array(weights, dtype=np.float64)  # criterion importance weights
+    # Use float32 — halves memory vs float64 for (H×W×N) stack
+    arrays_float = [arr.astype(np.float32) for arr in arrays]
+    weights_arr = np.array(weights, dtype=np.float32)
 
     # Build NaN mask
     nan_mask = np.zeros(reference_shape, dtype=bool)
     for arr in arrays_float:
         nan_mask |= np.isnan(arr)
 
-    # Step 1: Stack values and sort per pixel in descending order
-    stacked = np.stack(arrays_float, axis=-1)  # Shape: (..., n)
-    sort_idx = np.argsort(stacked, axis=-1)[..., ::-1]  # indices of descending values
+    # Step 1: Stack values (float32) and sort per pixel in descending order.
+    # np.stack creates (H×W×N) — largest single allocation; float32 halves its size.
+    stacked = np.stack(arrays_float, axis=-1)  # shape (..., n), float32
+    sort_idx = np.argsort(stacked, axis=-1)[..., ::-1]  # descending
     sorted_values = np.take_along_axis(stacked, sort_idx, axis=-1)
+    del stacked  # free immediately — no longer needed
 
     # Step 2: OWA position weights (Yager's formula)
     if alpha == 0.0:
-        owa_weights = np.zeros(n)
+        owa_weights = np.zeros(n, dtype=np.float32)
         owa_weights[-1] = 1.0   # all weight on minimum
     elif alpha == 1.0:
-        owa_weights = np.zeros(n)
+        owa_weights = np.zeros(n, dtype=np.float32)
         owa_weights[0] = 1.0    # all weight on maximum
     else:
         exponent = 1.0 - alpha
         owa_weights = np.array(
-            [(j / n) ** exponent - ((j - 1) / n) ** exponent for j in range(1, n + 1)]
+            [(j / n) ** exponent - ((j - 1) / n) ** exponent for j in range(1, n + 1)],
+            dtype=np.float32
         )
 
     logger.debug(f"OWA position weights: {owa_weights}")
 
-    # Step 3: Weighted OWA — combine criterion importance weights with position weights.
-    # For each pixel, the criterion that ranks j-th by value gets combined weight
-    # proportional to both its OWA position weight AND its criterion importance weight.
-    # This ensures W_A, W_B, W_C (or intra-group weights) are actually respected.
-    #
-    # sorted_importance[..., j] = importance weight of the criterion ranked j-th at each pixel
+    # Step 3: Weighted OWA
     sorted_importance = weights_arr[sort_idx]            # shape (..., n)
     combined = owa_weights * sorted_importance           # element-wise, shape (..., n)
-    sum_combined = combined.sum(axis=-1, keepdims=True)  # shape (..., 1)
-    # Normalise so combined weights sum to 1 for each pixel
+    sum_combined = combined.sum(axis=-1, keepdims=True)
     combined_norm = np.where(sum_combined > 0, combined / sum_combined, owa_weights)
+    del combined, sorted_importance  # free before the final sum
 
     result = np.sum(sorted_values * combined_norm, axis=-1)
     result = np.clip(result, 0.0, 1.0)
@@ -496,7 +497,7 @@ def compute_favourability(
     # the same pixel would receive a different score if the threshold is changed, because
     # the eligible population changes and therefore p_max changes. A fixed reference
     # ensures that pressure scores are comparable across different threshold settings.
-    pressure_for_score = anthropogenic_pressure.copy().astype(np.float64)
+    pressure_for_score = anthropogenic_pressure.astype(np.float32)
     pressure_for_score[~eliminatory_mask] = np.nan  # Exclude eliminated pixels
 
     valid_pressure = pressure_for_score[~np.isnan(pressure_for_score)]

@@ -332,29 +332,40 @@ def render():
     st.subheader("Protected Areas Network (WDPA)")
 
     st.caption(
-        "Supported formats: GeoPackage (.gpkg), GeoJSON (.geojson), Shapefile (.shp). "
-        "Click **Browse** or paste a path directly."
+        "Supported formats: GeoPackage (.gpkg), GeoJSON (.geojson), Shapefile (.shp), ZIP archive (.zip). "
+        "Click **Browse…** or paste a path directly. Use **✕ Clear** to remove and reload a different file."
     )
 
-    # Browse button writes directly into the widget's own session-state key
-    if st.button("Browse…", key='wdpa_browse'):
-        chosen = _native_browse([
-            ("Vector layers", "*.gpkg *.geojson *.shp"),
-            ("All files", "*.*"),
-        ])
-        if chosen:
-            st.session_state['wdpa_direct_path'] = chosen
+    col_wdpa_browse, col_wdpa_clear = st.columns([1, 1])
+    with col_wdpa_browse:
+        if st.button("Browse…", key='wdpa_browse'):
+            chosen = _native_browse([
+                ("Vector layers", "*.gpkg *.geojson *.shp *.zip"),
+                ("All files", "*.*"),
+            ])
+            if chosen:
+                st.session_state['wdpa_direct_path'] = chosen
+                st.session_state.pop('pa_gdf', None)  # force reload
+    with col_wdpa_clear:
+        if st.button("✕ Clear", key='wdpa_clear'):
+            st.session_state['wdpa_direct_path'] = ''
+            st.session_state['wdpa_file'] = None
+            st.session_state.pop('_original_wdpa_path', None)
+            st.session_state.pop('pa_gdf', None)
 
+    prev_wdpa = st.session_state.get('wdpa_file')
     wdpa_path_input = st.text_input(
         "WDPA file path",
         key='wdpa_direct_path',
         placeholder=r"C:\data\wdpa.gpkg",
-        help="Full path to the WDPA GeoPackage, GeoJSON or Shapefile on disk.",
+        help="Full path to the WDPA GeoPackage (.gpkg), GeoJSON, Shapefile, or ZIP on disk.",
     )
 
     if wdpa_path_input:
         p = Path(wdpa_path_input)
         if p.exists():
+            if prev_wdpa != str(p):
+                st.session_state.pop('pa_gdf', None)  # path changed → force reload
             st.session_state['wdpa_file'] = str(p)
             st.session_state['_original_wdpa_path'] = str(p)
             st.caption(f"✅ {p.name}")
@@ -402,20 +413,26 @@ def render():
     if '_original_raster_paths' not in st.session_state:
         st.session_state['_original_raster_paths'] = {}
 
-    # Helper: Browse button + editable path input for each raster layer
+    # Helper: Browse + Clear buttons with editable path input for each raster layer
     def _layer_uploader(criterion_key, label, help_text):
         widget_key = f'{criterion_key}_direct_path'
 
-        col_btn, col_name = st.columns([1, 4])
-        with col_btn:
+        col_browse, col_clear, col_name = st.columns([1, 1, 4])
+        with col_browse:
             if st.button("Browse…", key=f'{criterion_key}_browse'):
                 chosen = _native_browse([
                     ("GeoTIFF", "*.tif *.tiff"),
                     ("All files", "*.*"),
                 ])
                 if chosen:
-                    # Write directly into the widget's own key so it updates on rerun
                     st.session_state[widget_key] = chosen
+        with col_clear:
+            if st.button("✕ Clear", key=f'{criterion_key}_clear'):
+                st.session_state[widget_key] = ''
+                st.session_state['criterion_raster_paths'].pop(criterion_key, None)
+                st.session_state['_original_raster_paths'].pop(criterion_key, None)
+                st.session_state['validation_reports'].pop(criterion_key, None)
+                st.session_state.pop(f"{criterion_key}_validated_path", None)
 
         with col_name:
             path_input = st.text_input(
