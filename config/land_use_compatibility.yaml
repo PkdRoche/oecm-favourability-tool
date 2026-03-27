@@ -32,13 +32,13 @@ clc_compatibility:
 
   # Level 2: Agricultural areas
   "2.1":
-    status: eliminatory
-    score: null
-    label: "Arable land (intensive)"
+    status: compatible
+    score: 0.5
+    label: "Arable land"
 
   "2.2":
     status: compatible
-    score: 0.5
+    score: 0.6
     label: "Permanent crops"
 
   "2.3":
@@ -63,8 +63,8 @@ clc_compatibility:
     label: "Scrub and herbaceous vegetation"
 
   "3.3":
-    status: neutral
-    score: 0.30
+    status: compatible
+    score: 0.6
     label: "Open spaces with little vegetation"
 
   # Level 4: Wetlands
