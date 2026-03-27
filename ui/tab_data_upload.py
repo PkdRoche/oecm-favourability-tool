@@ -6,6 +6,8 @@ from pathlib import Path
 import logging
 import numpy as np
 import rasterio
+import subprocess
+import sys
 
 # Import validation function with graceful fallback
 try:
@@ -17,6 +19,25 @@ except ImportError:
     VALIDATION_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+def _native_browse(filetypes: list[tuple]) -> str:
+    """Open a native Windows file dialog in a subprocess and return the selected path (or '')."""
+    script = (
+        "import tkinter as tk; from tkinter import filedialog; "
+        "root = tk.Tk(); root.withdraw(); root.wm_attributes('-topmost', True); "
+        f"path = filedialog.askopenfilename(filetypes={filetypes!r}); "
+        "root.destroy(); print(path)"
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, '-c', script],
+            capture_output=True, text=True, timeout=120
+        )
+        return result.stdout.strip()
+    except Exception as e:
+        logger.warning(f"Native file dialog failed: {e}")
+        return ''
 
 
 def _validate_layer(criterion_key: str, file_path: str) -> None:
@@ -311,20 +332,39 @@ def render():
     st.subheader("Protected Areas Network (WDPA)")
 
     st.caption(
-        "**Recommended format: GeoPackage (.gpkg)** — single file, no missing components. "
-        "Shapefile: upload as a ZIP archive containing .shp, .shx, .dbf and .prj."
+        "Supported formats: GeoPackage (.gpkg), GeoJSON (.geojson), Shapefile (.shp). "
+        "Click **Browse** or paste a path directly."
     )
 
-    wdpa_uploaded_file = st.file_uploader(
-        "Upload WDPA protected areas layer",
-        type=['gpkg', 'geojson', 'zip'],
-        key='wdpa_upload',
-        help=(
-            "GeoPackage (.gpkg) or GeoJSON (.geojson) recommended. "
-            "For Shapefiles, zip all components (.shp, .shx, .dbf, .prj) into a .zip archive. "
-            "Required columns: IUCN_CAT, DESIG_TYPE."
-        )
+    # Browse button writes directly into the widget's own session-state key
+    if st.button("Browse…", key='wdpa_browse'):
+        chosen = _native_browse([
+            ("Vector layers", "*.gpkg *.geojson *.shp"),
+            ("All files", "*.*"),
+        ])
+        if chosen:
+            st.session_state['wdpa_direct_path'] = chosen
+
+    wdpa_path_input = st.text_input(
+        "WDPA file path",
+        key='wdpa_direct_path',
+        placeholder=r"C:\data\wdpa.gpkg",
+        help="Full path to the WDPA GeoPackage, GeoJSON or Shapefile on disk.",
     )
+
+    if wdpa_path_input:
+        p = Path(wdpa_path_input)
+        if p.exists():
+            st.session_state['wdpa_file'] = str(p)
+            st.session_state['_original_wdpa_path'] = str(p)
+            st.caption(f"✅ {p.name}")
+        else:
+            st.warning(f"File not found: {wdpa_path_input}")
+            st.session_state['wdpa_file'] = None
+            st.session_state.pop('_original_wdpa_path', None)
+    else:
+        st.session_state['wdpa_file'] = None
+        st.session_state.pop('_original_wdpa_path', None)
 
     def _clear_pa_gdf():
         """Reset cached PA GeoDataFrame when marine filter changes."""
@@ -341,51 +381,15 @@ def render():
         )
     )
 
-    # Store WDPA file in session state
-    if wdpa_uploaded_file is not None:
-        import zipfile, os
-        suffix = Path(wdpa_uploaded_file.name).suffix.lower()
-        if suffix == '.zip':
-            # Extract ZIP to a temp directory and find the .shp or .gpkg inside
-            tmp_dir = tempfile.mkdtemp()
-            zip_bytes = wdpa_uploaded_file.read()
-            zip_path = os.path.join(tmp_dir, 'wdpa.zip')
-            with open(zip_path, 'wb') as f:
-                f.write(zip_bytes)
-            with zipfile.ZipFile(zip_path, 'r') as zf:
-                zf.extractall(tmp_dir)
-            # Find the main vector file
-            for ext in ['.gpkg', '.shp', '.geojson']:
-                matches = [os.path.join(tmp_dir, fn)
-                           for fn in os.listdir(tmp_dir) if fn.lower().endswith(ext)]
-                if matches:
-                    st.session_state['wdpa_file'] = matches[0]
-                    st.caption(f"✅ Extracted: {Path(matches[0]).name}")
-                    logger.info(f"WDPA extracted from ZIP: {matches[0]}")
-                    break
-            else:
-                st.error("No .gpkg, .shp or .geojson found inside the ZIP archive.")
-                st.session_state['wdpa_file'] = None
-        else:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(wdpa_uploaded_file.read())
-                tmp.flush()
-                st.session_state['wdpa_file'] = tmp.name
-                logger.info(f"WDPA file uploaded: {tmp.name}")
-    else:
-        st.session_state['wdpa_file'] = None
-
     st.markdown("---")
 
     # ===================================================================
     # Criterion rasters (for Module 2)
     # ===================================================================
     st.subheader("Multi-Criteria Evaluation Layers")
-    st.markdown(
-        """
-        Upload the six criterion rasters (GeoTIFF, EPSG:3035).
-        Files up to **2 GB** are supported — including Corine Land Cover.
-        """
+    st.caption(
+        "Click **Browse…** or paste a path for each GeoTIFF (EPSG:3035). "
+        "Paths are saved as-is in the .ini project file — no temporary copies."
     )
 
     # Initialize session state dicts
@@ -394,46 +398,50 @@ def render():
     if 'validation_reports' not in st.session_state:
         st.session_state['validation_reports'] = {}
 
-    # Helper: render one file uploader and update session state
+    # Initialize original paths dict
+    if '_original_raster_paths' not in st.session_state:
+        st.session_state['_original_raster_paths'] = {}
+
+    # Helper: Browse button + editable path input for each raster layer
     def _layer_uploader(criterion_key, label, help_text):
-        uploaded = st.file_uploader(
-            label,
-            type=['tif', 'tiff'],
-            key=f'{criterion_key}_upload',
-            help=help_text,
-        )
-        if uploaded is not None:
-            # Skip re-writing if already stored for this upload (avoid temp file leak)
-            existing_path = st.session_state['criterion_raster_paths'].get(criterion_key)
-            validation_key = f'_validated_{criterion_key}'
-            already_validated = st.session_state.get(validation_key) == uploaded.name
-            if existing_path and already_validated and Path(existing_path).exists():
-                return  # Already processed this file — skip
+        widget_key = f'{criterion_key}_direct_path'
 
-            # Clean up previous temp file for this criterion
-            if existing_path and Path(existing_path).exists():
-                try:
-                    Path(existing_path).unlink()
-                    logger.debug(f"Cleaned up old temp file: {existing_path}")
-                except OSError:
-                    pass
+        col_btn, col_name = st.columns([1, 4])
+        with col_btn:
+            if st.button("Browse…", key=f'{criterion_key}_browse'):
+                chosen = _native_browse([
+                    ("GeoTIFF", "*.tif *.tiff"),
+                    ("All files", "*.*"),
+                ])
+                if chosen:
+                    # Write directly into the widget's own key so it updates on rerun
+                    st.session_state[widget_key] = chosen
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
-                tmp.write(uploaded.read())
-                tmp.flush()
-                st.session_state['criterion_raster_paths'][criterion_key] = tmp.name
-                logger.info(f"{criterion_key} uploaded: {tmp.name}")
-                _validate_layer(criterion_key, tmp.name)
+        with col_name:
+            path_input = st.text_input(
+                label,
+                key=widget_key,
+                placeholder=r"C:\data\file.tif",
+                help=help_text,
+            )
+
+        if path_input:
+            p = Path(path_input)
+            if p.exists():
+                prev = st.session_state['criterion_raster_paths'].get(criterion_key)
+                st.session_state['criterion_raster_paths'][criterion_key] = str(p)
+                st.session_state['_original_raster_paths'][criterion_key] = str(p)
+                if prev != str(p):
+                    _validate_layer(criterion_key, str(p))
+                st.caption(f"✅ {p.name}")
+            else:
+                st.warning(f"File not found: {path_input}")
+                st.session_state['criterion_raster_paths'].pop(criterion_key, None)
+                st.session_state['_original_raster_paths'].pop(criterion_key, None)
+                st.session_state['validation_reports'].pop(criterion_key, None)
         else:
-            # Clean up temp file when uploader is cleared
-            existing_path = st.session_state['criterion_raster_paths'].get(criterion_key)
-            if existing_path and Path(existing_path).exists():
-                try:
-                    Path(existing_path).unlink()
-                    logger.debug(f"Cleaned up temp file on clear: {existing_path}")
-                except OSError:
-                    pass
             st.session_state['criterion_raster_paths'].pop(criterion_key, None)
+            st.session_state['_original_raster_paths'].pop(criterion_key, None)
             st.session_state['validation_reports'].pop(criterion_key, None)
 
     col_left, col_right = st.columns(2)
