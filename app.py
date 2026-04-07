@@ -34,6 +34,10 @@ st.markdown(
         border-bottom: 3px solid #2E7D32;
         color: #2E7D32;
     }
+    /* Suppress grey overlay during recomputation */
+    [data-testid="stAppViewBlockContainer"],
+    .stApp > header + div,
+    div[class*="stale"] { opacity: 1 !important; }
     </style>
     """,
     unsafe_allow_html=True,

@@ -1,4 +1,5 @@
-# WDPA IUCN_CAT and DESIG fields → 5 display classes
+# WDPA IUCN_MAX and DESIG fields → 5 display classes
+# IUCN_MAX: custom column holding the most protective IUCN category for each feature
 # colour: hex for map display
 # priority: lower = more protective (used for deduplication ranking)
 

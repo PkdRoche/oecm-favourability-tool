@@ -278,7 +278,7 @@ def classify_iucn(
     classification_table: dict
 ) -> gpd.GeoDataFrame:
     """
-    Recode IUCN_CAT and DESIG_TYPE to 5 display classes.
+    Recode IUCN_MAX and DESIG_TYPE to 5 display classes.
 
     Classification table loaded from config/iucn_classification.yaml.
     Adds a 'protection_class' column with standardised values based on
@@ -287,7 +287,7 @@ def classify_iucn(
     Parameters
     ----------
     gdf : gpd.GeoDataFrame
-        Protected areas GeoDataFrame with IUCN_CAT and DESIG columns.
+        Protected areas GeoDataFrame with IUCN_MAX and DESIG columns.
     classification_table : dict
         Classification rules from iucn_classification.yaml. Expected structure:
         {
@@ -311,7 +311,7 @@ def classify_iucn(
     Notes
     -----
     Classification logic:
-    1. Check IUCN_CAT first
+    1. Check IUCN_MAX first
     2. If not matched, check DESIG field for keywords
     3. Default to 'unassigned' if no match
 
@@ -326,9 +326,9 @@ def classify_iucn(
     gdf = gdf.copy()
 
     # Ensure required columns exist
-    if 'IUCN_CAT' not in gdf.columns:
-        logger.warning("IUCN_CAT column not found, creating empty column")
-        gdf['IUCN_CAT'] = ''
+    if 'IUCN_MAX' not in gdf.columns:
+        logger.warning("IUCN_MAX column not found, creating empty column")
+        gdf['IUCN_MAX'] = ''
 
     # Accept DESIG or DESIG_ENG (WDPA uses DESIG_ENG in most exports)
     if 'DESIG' not in gdf.columns and 'DESIG_ENG' in gdf.columns:
@@ -368,7 +368,7 @@ def classify_iucn(
         return 'unassigned'
 
     # Vectorised classification — list comprehension avoids per-row Series overhead
-    iucn_cats = gdf['IUCN_CAT'].astype(str).str.strip().tolist()
+    iucn_cats = gdf['IUCN_MAX'].astype(str).str.strip().tolist()
     desigs    = gdf['DESIG'].astype(str).str.strip().tolist()
     gdf['protection_class'] = [_classify(ic, d) for ic, d in zip(iucn_cats, desigs)]
 
@@ -405,6 +405,7 @@ def _standardise_columns(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         'name': 'NAME',
         'iucn_cat': 'IUCN_CAT',
         'iucn_category': 'IUCN_CAT',
+        'iucn_max': 'IUCN_MAX',
         'desig': 'DESIG',
         'designation': 'DESIG',
         'desig_type': 'DESIG_TYPE',
