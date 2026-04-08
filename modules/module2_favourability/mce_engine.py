@@ -317,7 +317,11 @@ def compute_favourability(
     alpha: float = 0.25,
     threshold_pressure: float = 150.0,
     gap_bonus: float = 0.0,
-    gap_mask: Optional[np.ndarray] = None
+    gap_mask: Optional[np.ndarray] = None,
+    percentile_norm: bool = False,
+    proximity_bonus: float = 0.0,
+    proximity_decay_km: float = 10.0,
+    pa_proximity_raster: Optional[np.ndarray] = None,
 ) -> dict[str, np.ndarray]:
     """Compute full MCE favourability pipeline.
 
@@ -463,26 +467,31 @@ def compute_favourability(
         )
     else:
         eco_score = raster_preprocessing.normalize_layer(
-            ecosystem_condition, 'ecosystem_condition', eco_params
+            ecosystem_condition, 'ecosystem_condition', eco_params,
+            percentile_norm=percentile_norm
         )
 
     # Regulating ES - sigmoid
     reg_params = transform_config['regulating_es']
     if reg_params['type'] == 'sigmoid':
+        _reg = raster_preprocessing.percentile_clip(regulating_es)[0] \
+               if percentile_norm else regulating_es
         reg_score = raster_preprocessing.normalize_sigmoid(
-            regulating_es,
+            _reg,
             inflection=reg_params['inflection'],
             slope=reg_params['slope']
         )
     else:
         reg_score = raster_preprocessing.normalize_layer(
-            regulating_es, 'regulating_es', reg_params
+            regulating_es, 'regulating_es', reg_params,
+            percentile_norm=percentile_norm
         )
 
     # Cultural ES - linear
     cult_params = transform_config['cultural_es']
     cult_score = raster_preprocessing.normalize_layer(
-        cultural_es, 'cultural_es', cult_params
+        cultural_es, 'cultural_es', cult_params,
+        percentile_norm=percentile_norm
     )
 
     # Provisioning ES - Gaussian (non-monotone, optimum at mean)
@@ -640,10 +649,47 @@ def compute_favourability(
             else:
                 logger.info("Gap bonus: no eligible pixels in gap zones")
 
-    # Return results
+    # =========================================================================
+    # Step 7: Apply PA proximity bonus (optional)
+    # S_final = S × (1 + proximity_bonus × exp(-d / decay_km)) for eligible pixels
+    # The bonus decays exponentially with distance from the PA network.
+    # A pixel adjacent to an existing PA receives the full proximity_bonus;
+    # pixels further away receive a proportionally smaller boost.
+    # =========================================================================
+    if proximity_bonus > 0.0 and pa_proximity_raster is not None:
+        if pa_proximity_raster.shape != reference_shape:
+            logger.warning(
+                f"pa_proximity_raster shape {pa_proximity_raster.shape} != "
+                f"reference {reference_shape}, skipping proximity bonus"
+            )
+        else:
+            eligible = eliminatory_mask & ~np.isnan(final_score)
+            decay_m  = proximity_decay_km * 1000.0   # km → metres (EPSG:3035)
+            bonus_factor = proximity_bonus * np.exp(
+                -pa_proximity_raster.astype(np.float32) / decay_m
+            )
+            final_score[eligible] = np.clip(
+                final_score[eligible] * (1.0 + bonus_factor[eligible]),
+                0.0, 1.0
+            )
+            n_boosted = int(np.sum(eligible & (bonus_factor > 0.01)))
+            logger.info(
+                f"Proximity bonus applied: {n_boosted} pixels boosted "
+                f"(max_bonus={proximity_bonus:.2f}, decay={proximity_decay_km:.0f} km)"
+            )
+
+    # Return results — normalised_arrays included for sensitivity analysis
     return {
-        'score': final_score,
-        'oecm_mask': oecm_mask & eliminatory_mask,  # Must pass both Group D and Group C
-        'classical_pa_mask': classical_pa_mask & eliminatory_mask,  # Classical PA only if eligible
-        'eliminatory_mask': eliminatory_mask
+        'score':            final_score,
+        'oecm_mask':        oecm_mask & eliminatory_mask,
+        'classical_pa_mask': classical_pa_mask & eliminatory_mask,
+        'eliminatory_mask': eliminatory_mask,
+        'normalised_arrays': {
+            'ecosystem_condition': eco_score,
+            'regulating_es':       reg_score,
+            'low_pressure':        pressure_score,
+            'cultural_es':         cult_score,
+            'provisioning_es':     prov_score,
+            'compatible_landuse':  landuse_score,
+        },
     }

@@ -135,7 +135,9 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
     # ===================================================================
     # Sub-tabs: Map and Statistics
     # ===================================================================
-    subtab1, subtab2 = st.tabs(["Map", "Statistics"])
+    subtab1, subtab2, subtab3, subtab4 = st.tabs([
+        "Map", "Statistics", "Sensitivity Analysis", "Candidate Sites"
+    ])
 
     with subtab1:
         # =================================================================
@@ -534,8 +536,351 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
             )
 
             st.caption("Full parameter log available at bottom of page.")
+            if params.get('percentile_norm'):
+                st.info("Percentile normalisation active: input rasters clipped to 2nd–98th percentile before scoring.")
         else:
             st.info("Parameter information not available.")
+
+    # =================================================================
+    # SUBTAB 3: Sensitivity Analysis
+    # =================================================================
+    with subtab3:
+        st.subheader("Weight Sensitivity Analysis")
+        st.markdown(
+            "Monte Carlo analysis: MCE is run **N times** with weights randomly "
+            "perturbed around your chosen values (Dirichlet distribution). "
+            "The **stability map** shows how often each pixel exceeds the display "
+            "threshold — values close to 1.0 are robust to weight uncertainty, "
+            "values close to 0.5 are ambiguous."
+        )
+
+        normalised_arrays = st.session_state.get('normalised_arrays', {})
+        eliminatory_mask  = st.session_state.get('eliminatory_mask')
+
+        if not normalised_arrays or eliminatory_mask is None:
+            st.info("Run the MCE analysis first (tab ④) to enable sensitivity analysis.")
+        else:
+            # ── Correlation heatmap ─────────────────────────────────────
+            st.markdown("#### Criterion Inter-Correlation")
+            st.caption(
+                "Pearson correlation matrix between normalised criterion rasters "
+                "(eligible pixels only). Pairs with |r| > 0.7 are highlighted — "
+                "they may double-count the same spatial pattern."
+            )
+            try:
+                _names = [k for k in normalised_arrays if normalised_arrays[k] is not None]
+                _valid = eliminatory_mask.ravel().astype(bool)
+                _mat   = np.stack(
+                    [normalised_arrays[k].ravel()[_valid] for k in _names], axis=0
+                )
+                _nan_rows = np.any(np.isnan(_mat), axis=0)
+                _mat = _mat[:, ~_nan_rows]
+
+                if _mat.shape[1] > 10:
+                    _corr = np.corrcoef(_mat)
+                    import plotly.graph_objects as _go
+                    _fig_corr = _go.Figure(data=_go.Heatmap(
+                        z=_corr,
+                        x=_names, y=_names,
+                        colorscale='RdBu_r',
+                        zmin=-1, zmax=1,
+                        text=[[f"{v:.2f}" for v in row] for row in _corr],
+                        texttemplate="%{text}",
+                        colorbar=dict(title='r')
+                    ))
+                    _fig_corr.update_layout(
+                        height=380,
+                        margin=dict(l=10, r=10, t=30, b=10)
+                    )
+                    st.plotly_chart(_fig_corr, use_container_width=True)
+                    # Flag high correlations
+                    _issues = []
+                    for _i in range(len(_names)):
+                        for _j in range(_i + 1, len(_names)):
+                            if abs(_corr[_i, _j]) > 0.7:
+                                _issues.append(
+                                    f"**{_names[_i]}** ↔ **{_names[_j]}**: "
+                                    f"r = {_corr[_i, _j]:.2f}"
+                                )
+                    if _issues:
+                        st.warning(
+                            "High inter-criterion correlation detected — these pairs "
+                            "may double-count the same spatial signal:\n\n" +
+                            "\n\n".join(_issues)
+                        )
+                    else:
+                        st.success("No highly correlated criterion pairs (|r| ≤ 0.7).")
+                else:
+                    st.warning("Too few valid pixels to compute correlations.")
+            except Exception as _e:
+                st.warning(f"Correlation matrix unavailable: {_e}")
+
+            st.markdown("---")
+
+            # ── Sensitivity run ─────────────────────────────────────────
+            st.markdown("#### Stability Map")
+            _map_threshold = st.session_state.get('export_threshold', 0.5)
+            _n_runs        = params.get('sensitivity_runs', 200) if params else 200
+            _conc          = params.get('sensitivity_concentration', 20) if params else 20
+            _perturb_intra = params.get('sensitivity_perturb_intra', True) if params else True
+
+            if st.button(
+                f"Run Sensitivity Analysis ({_n_runs} runs)",
+                type="primary",
+                key="run_sensitivity_btn"
+            ):
+                with st.spinner(f"Running {_n_runs} Monte Carlo iterations…"):
+                    try:
+                        from modules.module2_favourability.sensitivity import run_sensitivity
+                        _weights = {
+                            'inter_group_weights': {
+                                'W_A': params['W_A'], 'W_B': params['W_B'],
+                                'W_C': params['W_C']
+                            },
+                            'group_a_weights': {
+                                'ecosystem_condition': params['w_condition'],
+                                'regulating_es':       params['w_regulating_es'],
+                                'low_pressure':        params['w_pressure'],
+                            },
+                            'group_c_weights': {
+                                'provisioning_es':    params['w_provisioning_es'],
+                                'compatible_landuse': params['w_landuse_compatible'],
+                            },
+                        }
+                        _stab, _std = run_sensitivity(
+                            normalised_arrays=normalised_arrays,
+                            base_weights=_weights,
+                            eliminatory_mask=eliminatory_mask,
+                            threshold=_map_threshold,
+                            n_runs=_n_runs,
+                            concentration=float(_conc),
+                            perturb_intra=_perturb_intra,
+                        )
+                        st.session_state['sensitivity_stability'] = _stab
+                        st.session_state['sensitivity_std']       = _std
+                        st.success("Sensitivity analysis complete.")
+                    except Exception as _e:
+                        st.error(f"Sensitivity analysis failed: {_e}")
+
+            if 'sensitivity_stability' in st.session_state:
+                _stab = st.session_state['sensitivity_stability']
+                _std  = st.session_state['sensitivity_std']
+                _prof = st.session_state.get('raster_profile')
+
+                # Render stability map
+                try:
+                    from rasterio.warp import reproject, calculate_default_transform, Resampling
+                    from rasterio.transform import array_bounds
+
+                    _src_crs = _prof['crs']
+                    _t4326, _w4326, _h4326 = calculate_default_transform(
+                        _src_crs, 'EPSG:4326',
+                        _prof['width'], _prof['height'],
+                        *array_bounds(_prof['height'], _prof['width'], _prof['transform'])
+                    )
+                    _stab_4326 = np.full((_h4326, _w4326), np.nan, dtype=np.float32)
+                    reproject(
+                        source=_stab, destination=_stab_4326,
+                        src_transform=_prof['transform'], src_crs=_src_crs,
+                        dst_transform=_t4326, dst_crs='EPSG:4326',
+                        resampling=Resampling.nearest,
+                        src_nodata=np.nan, dst_nodata=np.nan
+                    )
+                    _west, _south, _east, _north = array_bounds(_h4326, _w4326, _t4326)
+                    _center_lat = (_south + _north) / 2
+                    _center_lon = (_west  + _east)  / 2
+
+                    import matplotlib.cm as _mcm
+                    import matplotlib.colors as _mcol
+                    _cmap_s = _mcm.get_cmap('RdYlGn')
+                    _norm_s = _mcol.Normalize(vmin=0.0, vmax=1.0)
+                    _valid_s = ~np.isnan(_stab_4326)
+                    _rgba_s  = np.zeros((_h4326, _w4326, 4), dtype=np.uint8)
+                    _rgba_s[_valid_s] = (
+                        _cmap_s(_norm_s(_stab_4326[_valid_s])) * 255
+                    ).astype(np.uint8)
+                    _img_s = Image.fromarray(_rgba_s, mode='RGBA')
+                    _buf_s = io.BytesIO()
+                    _img_s.save(_buf_s, format='PNG')
+                    _b64_s = base64.b64encode(_buf_s.getvalue()).decode()
+
+                    _m_s = folium.Map(
+                        location=[_center_lat, _center_lon], zoom_start=8,
+                        tiles='https://tiles.stadiamaps.com/tiles/stamen_toner_lite/{z}/{x}/{y}.png',
+                        attr='Stadia / OpenStreetMap'
+                    )
+                    folium.raster_layers.ImageOverlay(
+                        image=f"data:image/png;base64,{_b64_s}",
+                        bounds=[[_south, _west], [_north, _east]],
+                        opacity=0.85, name='Stability'
+                    ).add_to(_m_s)
+
+                    _legend_s = """
+                    <div style="position:fixed;bottom:50px;left:50px;width:200px;
+                                background:white;border:2px solid grey;z-index:9999;
+                                font-size:12px;padding:10px">
+                    <b>Stability (fraction of runs ≥ threshold)</b>
+                    <div style="background:linear-gradient(to right,#d7191c,#ffffbf,#1a9641);
+                                height:16px;margin:5px 0;"></div>
+                    <div style="display:flex;justify-content:space-between;font-size:10px">
+                        <span>0% (unstable)</span><span>100% (robust)</span>
+                    </div></div>"""
+                    _m_s.get_root().html.add_child(folium.Element(_legend_s))
+                    st_folium(_m_s, width="100%", height=480)
+
+                    # Summary statistics
+                    _el = eliminatory_mask.ravel().astype(bool)
+                    _s_flat = _stab.ravel()[_el]
+                    _s_flat = _s_flat[~np.isnan(_s_flat)]
+                    if len(_s_flat) > 0:
+                        _c1, _c2, _c3 = st.columns(3)
+                        with _c1:
+                            st.metric("Highly stable (≥80%)",
+                                      f"{(_s_flat >= 0.8).mean()*100:.1f}% of pixels")
+                        with _c2:
+                            st.metric("Ambiguous (40–60%)",
+                                      f"{((_s_flat >= 0.4) & (_s_flat < 0.6)).mean()*100:.1f}% of pixels")
+                        with _c3:
+                            st.metric("Unstable (<20%)",
+                                      f"{(_s_flat < 0.2).mean()*100:.1f}% of pixels")
+                except Exception as _e:
+                    st.error(f"Stability map rendering failed: {_e}")
+
+    # =================================================================
+    # SUBTAB 4: Candidate Sites
+    # =================================================================
+    with subtab4:
+        st.subheader("Candidate OECM Sites")
+        st.markdown(
+            "Delineates spatially contiguous patches above the score threshold, "
+            "filters by the Minimum Mapping Unit, and ranks them by a composite "
+            "of mean score, gap overlap, patch area and proximity to existing PAs."
+        )
+
+        _score  = st.session_state.get('score_array')
+        _prof   = st.session_state.get('raster_profile')
+        _el_msk = st.session_state.get('eliminatory_mask')
+
+        if _score is None or _prof is None:
+            st.info("Run the MCE analysis first to enable candidate site delineation.")
+        else:
+            _threshold_patch = st.slider(
+                "Score threshold for patch delineation",
+                min_value=0.0, max_value=1.0,
+                value=st.session_state.get('export_threshold', 0.5),
+                step=0.05, key='patch_threshold_slider'
+            )
+            _mmu = params.get('mmu_ha', 100) if params else 100
+            st.caption(
+                f"MMU = {_mmu} ha (adjust in sidebar → 6d). "
+                "Patches smaller than this area are discarded."
+            )
+
+            if st.button("Delineate Candidate Sites", type="primary",
+                         key="delineate_btn"):
+                with st.spinner("Delineating patches and computing attributes…"):
+                    try:
+                        from modules.module2_favourability.patch_delineation import (
+                            delineate_patches
+                        )
+                        _pa_gdf    = st.session_state.get('pa_gdf')
+                        _gap_lyrs  = st.session_state.get('gap_layers', {})
+                        _strict_gp = _gap_lyrs.get('strict_gaps')
+
+                        _sites = delineate_patches(
+                            score_array=_score,
+                            profile=_prof,
+                            threshold=_threshold_patch,
+                            mmu_ha=float(_mmu),
+                            pa_gdf=_pa_gdf,
+                            strict_gaps_gdf=_strict_gp,
+                        )
+                        st.session_state['candidate_sites'] = _sites
+                        if len(_sites) == 0:
+                            st.warning(
+                                "No patches found above threshold with area ≥ MMU. "
+                                "Try lowering the threshold or the MMU."
+                            )
+                        else:
+                            st.success(
+                                f"Delineated **{len(_sites)}** candidate OECM sites "
+                                f"(MMU = {_mmu} ha, threshold = {_threshold_patch:.2f})."
+                            )
+                    except Exception as _e:
+                        st.error(f"Patch delineation failed: {_e}")
+
+            _sites = st.session_state.get('candidate_sites')
+            if _sites is not None and len(_sites) > 0:
+                # ── Ranked table ────────────────────────────────────────
+                st.markdown("#### Ranked Candidate Sites")
+                _disp = _sites[[
+                    'patch_id', 'area_ha', 'mean_score', 'max_score',
+                    'compactness', 'dist_to_pa_km', 'gap_overlap_pct', 'rank_score'
+                ]].copy()
+                _disp.columns = [
+                    'Rank', 'Area (ha)', 'Mean Score', 'Max Score',
+                    'Compactness', 'Dist to PA (km)', 'Gap Overlap (%)', 'Rank Score'
+                ]
+                st.dataframe(
+                    _disp.style.background_gradient(
+                        subset=['Rank Score'], cmap='YlGn'
+                    ),
+                    hide_index=True, use_container_width=True
+                )
+                st.caption(
+                    "Rank Score = 50% mean score + 20% gap overlap + "
+                    "20% log(area) + 10% PA proximity. "
+                    "Compactness: 1.0 = circular patch (Polsby-Popper index)."
+                )
+
+                # ── Site map ────────────────────────────────────────────
+                st.markdown("#### Site Map")
+                try:
+                    import geopandas as gpd
+                    _sites_4326 = _sites.to_crs('EPSG:4326')
+                    _centroid   = _sites_4326.geometry.union_all().centroid
+                    _m_sites    = folium.Map(
+                        location=[_centroid.y, _centroid.x], zoom_start=9,
+                        tiles='https://tiles.stadiamaps.com/tiles/stamen_toner_lite/{z}/{x}/{y}.png',
+                        attr='Stadia / OpenStreetMap'
+                    )
+                    folium.GeoJson(
+                        _sites_4326,
+                        name='Candidate Sites',
+                        style_function=lambda f: {
+                            'fillColor': '#2E7D32', 'color': '#1B5E20',
+                            'weight': 1.5, 'fillOpacity': 0.45
+                        },
+                        tooltip=folium.GeoJsonTooltip(
+                            fields=['patch_id', 'area_ha', 'mean_score',
+                                    'gap_overlap_pct', 'rank_score'],
+                            aliases=['Site #', 'Area (ha)', 'Mean Score',
+                                     'Gap Overlap (%)', 'Rank Score']
+                        )
+                    ).add_to(_m_sites)
+                    folium.LayerControl().add_to(_m_sites)
+                    st_folium(_m_sites, width="100%", height=480)
+                except Exception as _e:
+                    st.warning(f"Site map unavailable: {_e}")
+
+                # ── GeoPackage download ──────────────────────────────────
+                st.markdown("#### Download Candidate Sites")
+                try:
+                    import tempfile, zipfile
+                    from pathlib import Path as _Path
+                    with tempfile.TemporaryDirectory() as _tmp:
+                        _gpkg = _Path(_tmp) / "candidate_oecm_sites.gpkg"
+                        _sites.to_file(str(_gpkg), driver='GPKG')
+                        with open(_gpkg, 'rb') as _f:
+                            _gpkg_bytes = _f.read()
+                    st.download_button(
+                        "Download GeoPackage",
+                        data=_gpkg_bytes,
+                        file_name="candidate_oecm_sites.gpkg",
+                        mime="application/geopackage+sqlite3",
+                    )
+                except Exception as _e:
+                    st.caption(f"GeoPackage export unavailable: {_e}")
 
     st.markdown("---")
 

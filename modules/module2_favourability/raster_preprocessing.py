@@ -713,10 +713,59 @@ def normalize_gaussian(
     return normalized
 
 
+def percentile_clip(
+    array: np.ndarray,
+    low_pct: float = 2.0,
+    high_pct: float = 98.0,
+) -> tuple[np.ndarray, float, float]:
+    """Clip array to [low_pct, high_pct] percentiles of valid values.
+
+    Returns the clipped array together with the percentile bounds used,
+    so callers can log or reuse them as vmin/vmax.
+
+    Parameters
+    ----------
+    array : np.ndarray
+        Input raster array (may contain NaN).
+    low_pct : float
+        Lower percentile cutoff (default 2).
+    high_pct : float
+        Upper percentile cutoff (default 98).
+
+    Returns
+    -------
+    clipped : np.ndarray
+        Array with values outside [p_low, p_high] clipped to those bounds.
+    p_low : float
+        Value at low_pct percentile.
+    p_high : float
+        Value at high_pct percentile.
+    """
+    valid = array[~np.isnan(array)]
+    if len(valid) == 0:
+        return array.copy(), 0.0, 1.0
+    p_low  = float(np.percentile(valid, low_pct))
+    p_high = float(np.percentile(valid, high_pct))
+    if p_high <= p_low:
+        logger.warning(
+            f"percentile_clip: p{high_pct}={p_high} <= p{low_pct}={p_low}; "
+            "skipping clip."
+        )
+        return array.copy(), p_low, p_high
+    clipped = np.where(np.isnan(array), array, np.clip(array, p_low, p_high))
+    logger.info(
+        f"Percentile clip [{low_pct}–{high_pct}%]: "
+        f"vmin={p_low:.4g}, vmax={p_high:.4g} "
+        f"(was [{float(np.nanmin(array)):.4g}, {float(np.nanmax(array)):.4g}])"
+    )
+    return clipped, p_low, p_high
+
+
 def normalize_layer(
     array: np.ndarray,
     layer_name: str,
-    params: dict
+    params: dict,
+    percentile_norm: bool = False,
 ) -> np.ndarray:
     """Dispatcher: apply normalization based on configuration.
 
@@ -736,6 +785,12 @@ def normalize_layer(
         - 'inverted_linear': vmin, vmax
         - 'sigmoid': inflection, slope
         - 'gaussian': mean, std
+    percentile_norm : bool
+        When True, clip the array to its 2nd–98th percentile range before
+        normalization.  This makes the result robust to outliers.  The
+        clipped bounds replace config-derived vmin/vmax for linear /
+        inverted_linear transforms.  Sigmoid and Gaussian transforms
+        receive the clipped array directly.
 
     Returns
     -------
@@ -746,57 +801,57 @@ def normalize_layer(
     ------
     ValueError
         If transformation type is unknown or required parameters are missing.
-
-    Notes
-    -----
-    For 'inverted_linear' type, vmin and vmax are derived from data range
-    at runtime if not provided in params.
     """
-    logger.info(f"Normalizing layer '{layer_name}'")
+    logger.info(
+        f"Normalizing layer '{layer_name}' "
+        f"(percentile_norm={percentile_norm})"
+    )
 
     if 'type' not in params:
         raise ValueError(f"Transformation parameters for '{layer_name}' missing 'type' key")
 
     transform_type = params['type']
 
+    # Optionally pre-clip to percentile range
+    if percentile_norm:
+        array, p_low, p_high = percentile_clip(array)
+    else:
+        p_low  = float(np.nanmin(array)) if np.any(~np.isnan(array)) else 0.0
+        p_high = float(np.nanmax(array)) if np.any(~np.isnan(array)) else 1.0
+
     if transform_type == 'linear':
-        if 'vmin' not in params or 'vmax' not in params:
+        # When percentile_norm is active, override config vmin/vmax with
+        # percentile bounds so the full [p2, p98] range maps to [0, 1].
+        vmin = p_low  if percentile_norm else params.get('vmin')
+        vmax = p_high if percentile_norm else params.get('vmax')
+        if vmin is None or vmax is None:
             raise ValueError(f"Linear transformation requires 'vmin' and 'vmax' parameters")
-        return normalize_linear(
-            array,
-            vmin=params['vmin'],
-            vmax=params['vmax'],
-            invert=params.get('invert', False)
-        )
+        return normalize_linear(array, vmin=vmin, vmax=vmax,
+                                invert=params.get('invert', False))
 
     elif transform_type == 'inverted_linear':
-        # For inverted linear, derive vmin/vmax from data if not provided
         if not np.any(~np.isnan(array)):
             raise ValueError(
-                f"Layer '{layer_name}': all values are NaN — cannot derive vmin/vmax for inverted_linear"
+                f"Layer '{layer_name}': all values are NaN — cannot derive vmin/vmax"
             )
-        vmin = params.get('vmin', float(np.nanmin(array)))
-        vmax = params.get('vmax', float(np.nanmax(array)))
+        vmin = p_low  if percentile_norm else params.get('vmin', float(np.nanmin(array)))
+        vmax = p_high if percentile_norm else params.get('vmax', float(np.nanmax(array)))
         logger.info(f"Inverted linear: using vmin={vmin}, vmax={vmax}")
         return normalize_linear(array, vmin=vmin, vmax=vmax, invert=True)
 
     elif transform_type == 'sigmoid':
         if 'inflection' not in params or 'slope' not in params:
             raise ValueError(f"Sigmoid transformation requires 'inflection' and 'slope' parameters")
-        return normalize_sigmoid(
-            array,
-            inflection=params['inflection'],
-            slope=params['slope']
-        )
+        return normalize_sigmoid(array,
+                                 inflection=params['inflection'],
+                                 slope=params['slope'])
 
     elif transform_type == 'gaussian':
         if 'mean' not in params or 'std' not in params:
             raise ValueError(f"Gaussian transformation requires 'mean' and 'std' parameters")
-        return normalize_gaussian(
-            array,
-            mean=params['mean'],
-            std=params['std']
-        )
+        return normalize_gaussian(array,
+                                  mean=params['mean'],
+                                  std=params['std'])
 
     else:
         raise ValueError(

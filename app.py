@@ -336,6 +336,33 @@ with tab4:
                         logger.warning(f"Failed to build gap mask: {e}")
                         gap_mask = None
 
+                # ── PA proximity raster (distance transform from WDPA) ──────
+                pa_proximity_raster = None
+                if parameters.get('proximity_bonus', 0.0) > 0.0:
+                    try:
+                        import numpy as np
+                        from scipy.ndimage import distance_transform_edt as _edt
+                        from rasterio.features import rasterize as _rasterize2
+                        pa_gdf_prox = st.session_state.get('pa_gdf')
+                        if pa_gdf_prox is not None and len(pa_gdf_prox) > 0:
+                            _pa_repr = pa_gdf_prox.to_crs(reference_profile['crs'])
+                            _pa_bin  = _rasterize2(
+                                shapes=[(g, 1) for g in _pa_repr.geometry
+                                        if g and not g.is_empty],
+                                out_shape=(reference_profile['height'],
+                                           reference_profile['width']),
+                                transform=reference_profile['transform'],
+                                fill=0, dtype='uint8'
+                            )
+                            pixel_size_m = abs(reference_profile['transform'][0])
+                            # distance_transform_edt returns distance in pixels
+                            pa_proximity_raster = _edt(
+                                1 - _pa_bin
+                            ).astype(np.float32) * pixel_size_m
+                            logger.info("PA proximity raster computed")
+                    except Exception as _e:
+                        logger.warning(f"PA proximity raster failed: {_e}")
+
                 try:
                     with st.spinner("Computing favourability scores…"):
                         results = mce_engine.compute_favourability(
@@ -350,7 +377,11 @@ with tab4:
                             alpha=parameters['alpha'],
                             threshold_pressure=parameters.get('threshold_pressure', 150.0),
                             gap_bonus=gap_bonus_val,
-                            gap_mask=gap_mask
+                            gap_mask=gap_mask,
+                            percentile_norm=parameters.get('percentile_norm', False),
+                            proximity_bonus=parameters.get('proximity_bonus', 0.0),
+                            proximity_decay_km=parameters.get('proximity_decay_km', 10.0),
+                            pa_proximity_raster=pa_proximity_raster,
                         )
 
                     st.session_state['score_array']        = results['score']
@@ -358,6 +389,7 @@ with tab4:
                     st.session_state['classical_pa_mask']  = results['classical_pa_mask']
                     st.session_state['eliminatory_mask']   = results['eliminatory_mask']
                     st.session_state['raster_profile']     = reference_profile
+                    st.session_state['normalised_arrays']  = results.get('normalised_arrays', {})
 
                     render_tab_module2(
                         score_array=results['score'],

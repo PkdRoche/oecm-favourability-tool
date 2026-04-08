@@ -272,6 +272,29 @@ def render_sidebar():
     st.sidebar.markdown("---")
 
     # ===================================================================
+    # Section 2b: Normalisation method
+    # ===================================================================
+    st.sidebar.header("2b. Normalisation Method")
+    percentile_norm = st.sidebar.toggle(
+        "Percentile normalisation (2nd–98th)",
+        value=False,
+        help=(
+            "When ON: each criterion is clipped to its 2nd–98th percentile "
+            "range before transformation. This prevents extreme outlier pixels "
+            "from compressing the rest of the data into a narrow score range. "
+            "Recommended when input rasters contain artefacts or extreme values."
+        )
+    )
+    if percentile_norm:
+        st.sidebar.caption(
+            "Outlier-robust: the top 2% and bottom 2% of pixel values are "
+            "clamped before normalisation. Score map is less sensitive to "
+            "single extreme pixels."
+        )
+
+    st.sidebar.markdown("---")
+
+    # ===================================================================
     # Section 3: Aggregation method
     # ===================================================================
     st.sidebar.header("3. Aggregation Method")
@@ -529,6 +552,89 @@ def render_sidebar():
     st.sidebar.markdown("---")
 
     # ===================================================================
+    # Section 6b: PA Network Proximity Bonus
+    # ===================================================================
+    st.sidebar.header("6b. PA Proximity Bonus (Optional)")
+    st.sidebar.caption(
+        "Boosts scores for pixels close to existing protected areas — "
+        "rewarding spatial complementarity with the PA network."
+    )
+
+    proximity_bonus = st.sidebar.slider(
+        "Max proximity bonus",
+        min_value=0.0,
+        max_value=0.20,
+        value=0.0,
+        step=0.01,
+        help=(
+            "Maximum score multiplier applied to pixels adjacent to a PA. "
+            "Bonus decays exponentially with distance. 0.0 = disabled."
+        )
+    )
+
+    proximity_decay_km = st.sidebar.slider(
+        "Decay distance (km)",
+        min_value=1.0,
+        max_value=50.0,
+        value=10.0,
+        step=1.0,
+        disabled=(proximity_bonus == 0.0),
+        help=(
+            "Distance at which the proximity bonus falls to 37% of its "
+            "maximum value (1/e decay). "
+            "E.g. 10 km → full bonus at 0 km, ~37% bonus at 10 km, "
+            "~14% at 20 km."
+        )
+    )
+
+    st.sidebar.markdown("---")
+
+    # ===================================================================
+    # Section 6c: Sensitivity Analysis Settings
+    # ===================================================================
+    with st.sidebar.expander("6c. Sensitivity Analysis Settings"):
+        sensitivity_runs = st.slider(
+            "Monte Carlo runs",
+            min_value=50, max_value=500, value=200, step=50,
+            key='sensitivity_runs',
+            help="More runs = more stable estimate but slower computation."
+        )
+        sensitivity_concentration = st.slider(
+            "Weight uncertainty (concentration)",
+            min_value=5, max_value=100, value=20, step=5,
+            key='sensitivity_concentration',
+            help=(
+                "Controls how widely weights are perturbed.\n"
+                "5 = high uncertainty, 100 = low uncertainty."
+            )
+        )
+        sensitivity_perturb_intra = st.toggle(
+            "Also perturb intra-group weights",
+            value=True,
+            key='sensitivity_perturb_intra',
+            help="When OFF, only inter-group weights (W_A/B/C) are perturbed."
+        )
+
+    st.sidebar.markdown("---")
+
+    # ===================================================================
+    # Section 6d: Patch Delineation Settings
+    # ===================================================================
+    with st.sidebar.expander("6d. Candidate Site Delineation"):
+        mmu_ha = st.slider(
+            "Minimum Mapping Unit (ha)",
+            min_value=10, max_value=5000, value=100, step=10,
+            key='mmu_ha',
+            help=(
+                "Candidate OECM patches smaller than this area are discarded. "
+                "Set based on the minimum viable governance unit for OECMs "
+                "in your jurisdiction."
+            )
+        )
+
+    st.sidebar.markdown("---")
+
+    # ===================================================================
     # Section 7: Module 1 weight suggestions
     # ===================================================================
     st.sidebar.header("7. Module 1 Weight Suggestions")
@@ -608,5 +714,12 @@ def render_sidebar():
         'w_cultural_es': w_cultural_es,
         'w_provisioning_es': w_provisioning_es,
         'w_landuse_compatible': w_landuse_compatible,
+        'percentile_norm': percentile_norm,
+        'proximity_bonus': proximity_bonus,
+        'proximity_decay_km': proximity_decay_km,
+        'sensitivity_runs': st.session_state.get('sensitivity_runs', 200),
+        'sensitivity_concentration': st.session_state.get('sensitivity_concentration', 20),
+        'sensitivity_perturb_intra': st.session_state.get('sensitivity_perturb_intra', True),
+        'mmu_ha': st.session_state.get('mmu_ha', 100),
         'gap_bonus': gap_bonus,
     }
