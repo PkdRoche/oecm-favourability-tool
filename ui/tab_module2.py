@@ -16,6 +16,27 @@ from datetime import datetime
 import plotly.graph_objects as go
 
 
+def _to_multipolygon(geom):
+    """Flatten any geometry to a MultiPolygon, extracting only polygon parts.
+
+    Folium's GeoJSON serialiser chokes on GeometryCollection because that type
+    uses "geometries" rather than "coordinates" in GeoJSON. Converting to a
+    MultiPolygon fixes this.
+    """
+    if geom is None or geom.is_empty:
+        return None
+    from shapely.geometry import MultiPolygon, Polygon, GeometryCollection
+    if isinstance(geom, (Polygon, MultiPolygon)):
+        return geom
+    if isinstance(geom, GeometryCollection):
+        polys = [g for g in geom.geoms if isinstance(g, (Polygon, MultiPolygon))]
+        if not polys:
+            return None
+        from shapely.ops import unary_union
+        return unary_union(polys)
+    return geom
+
+
 def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
                        eliminatory_mask=None, profile=None, params=None):
     """
@@ -157,16 +178,47 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
         try:
             # Convert score_array to PNG using RdYlGn colormap
             import matplotlib.cm as mcm
-            from rasterio.warp import transform_bounds
+            from rasterio.warp import (transform_bounds, reproject,
+                                       calculate_default_transform, Resampling)
+            from rasterio.transform import array_bounds
 
             cmap = mcm.get_cmap('RdYlGn')
             norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
 
+            # ------------------------------------------------------------------
+            # Reproject score_array from source CRS (EPSG:3035) to EPSG:4326
+            # so that the PNG pixels are in geographic space and align correctly
+            # with the Leaflet/folium basemap.
+            # ------------------------------------------------------------------
+            src_crs = profile['crs']
+            dst_crs = 'EPSG:4326'
+
+            transform_4326, w_4326, h_4326 = calculate_default_transform(
+                src_crs, dst_crs,
+                profile['width'], profile['height'],
+                *array_bounds(profile['height'], profile['width'], profile['transform'])
+            )
+
+            score_4326 = np.full((h_4326, w_4326), np.nan, dtype=np.float32)
+            reproject(
+                source=score_array.astype(np.float32),
+                destination=score_4326,
+                src_transform=profile['transform'],
+                src_crs=src_crs,
+                dst_transform=transform_4326,
+                dst_crs=dst_crs,
+                resampling=Resampling.nearest,
+                src_nodata=np.nan,
+                dst_nodata=np.nan
+            )
+
             # Show only pixels at or above the map threshold — others are transparent
-            display_mask = valid_mask & (score_array >= map_threshold)
-            rgba = np.zeros((*score_array.shape, 4), dtype=np.uint8)
-            rgba[display_mask] = (cmap(norm(score_array[display_mask])) * 255).astype(np.uint8)
-            # Pixels below threshold and eliminated pixels stay fully transparent (alpha=0)
+            valid_mask_4326 = ~np.isnan(score_4326)
+            display_mask_4326 = valid_mask_4326 & (score_4326 >= map_threshold)
+            rgba = np.zeros((h_4326, w_4326, 4), dtype=np.uint8)
+            rgba[display_mask_4326] = (
+                cmap(norm(score_4326[display_mask_4326])) * 255
+            ).astype(np.uint8)
 
             # Convert to PIL Image
             img_pil = Image.fromarray(rgba, mode='RGBA')
@@ -176,40 +228,26 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
             img_pil.save(buffered, format="PNG")
             img_base64 = base64.b64encode(buffered.getvalue()).decode()
 
-            # Get bounds from profile and reproject to EPSG:4326
-            from rasterio.transform import array_bounds
-
-            bounds_3035 = array_bounds(
-                profile['height'],
-                profile['width'],
-                profile['transform']
-            )
-
-            # Reproject bounds from EPSG:3035 to EPSG:4326
-            bounds_4326 = transform_bounds(
-                'EPSG:3035',
-                'EPSG:4326',
-                bounds_3035[0],  # left
-                bounds_3035[1],  # bottom
-                bounds_3035[2],  # right
-                bounds_3035[3]   # top
-            )
+            # Bounds come directly from the reprojected transform — no extra
+            # transform_bounds call needed; these are already in EPSG:4326.
+            # array_bounds returns (west, south, east, north) = (left, bottom, right, top)
+            west, south, east, north = array_bounds(h_4326, w_4326, transform_4326)
 
             # Create folium map centered on bounds
-            center_lat = (bounds_4326[1] + bounds_4326[3]) / 2
-            center_lon = (bounds_4326[0] + bounds_4326[2]) / 2
+            center_lat = (south + north) / 2
+            center_lon = (west + east) / 2
 
             m = folium.Map(
                 location=[center_lat, center_lon],
                 zoom_start=8,
-                tiles='OpenStreetMap'
+                tiles='https://tiles.stadiamaps.com/tiles/stamen_toner_lite/{z}/{x}/{y}.png',
+                attr='&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>, &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
             )
 
-            # Add raster overlay
+            # Add raster overlay — bounds in [[south, west], [north, east]] order
             folium.raster_layers.ImageOverlay(
                 image=f"data:image/png;base64,{img_base64}",
-                bounds=[[bounds_4326[1], bounds_4326[0]],  # SW corner
-                        [bounds_4326[3], bounds_4326[2]]],  # NE corner
+                bounds=[[south, west], [north, east]],
                 opacity=0.9,
                 name='Favourability Score'
             ).add_to(m)
@@ -218,39 +256,23 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
             study_area_geom = st.session_state.get('study_area_geometry')
             if study_area_geom is not None:
                 import geopandas as gpd
-                nuts_gdf = gpd.GeoDataFrame([{'geometry': study_area_geom}], crs='EPSG:3035')
-                nuts_gdf_4326 = nuts_gdf.to_crs('EPSG:4326')
+                from shapely.ops import unary_union
+                # Collapse any GeometryCollection → MultiPolygon so folium can serialise it
+                clean_geom = _to_multipolygon(study_area_geom)
+                if clean_geom is not None and not clean_geom.is_empty:
+                    nuts_gdf = gpd.GeoDataFrame([{'geometry': clean_geom}], crs='EPSG:3035')
+                    nuts_gdf_4326 = nuts_gdf.to_crs('EPSG:4326')
+                    folium.GeoJson(
+                        nuts_gdf_4326,
+                        name='Study Area',
+                        style_function=lambda x: {
+                            'fillColor': 'none',
+                            'color': 'white',
+                            'weight': 2,
+                            'fillOpacity': 0
+                        }
+                    ).add_to(m)
 
-                folium.GeoJson(
-                    nuts_gdf_4326,
-                    name='Study Area',
-                    style_function=lambda x: {
-                        'fillColor': 'none',
-                        'color': 'white',
-                        'weight': 2,
-                        'fillOpacity': 0
-                    }
-                ).add_to(m)
-
-            # Add WDPA protected areas if available
-            wdpa_gdf = st.session_state.get('pa_gdf')
-            if wdpa_gdf is not None:
-                # Deduplicate column names (WDPA shapefiles can have duplicates)
-                wdpa_clean = wdpa_gdf.copy()
-                if wdpa_clean.columns.duplicated().any():
-                    wdpa_clean = wdpa_clean.loc[:, ~wdpa_clean.columns.duplicated()]
-                wdpa_gdf_4326 = wdpa_clean[['geometry']].to_crs('EPSG:4326')
-
-                folium.GeoJson(
-                    wdpa_gdf_4326,
-                    name='Protected Areas (WDPA)',
-                    style_function=lambda x: {
-                        'fillColor': '#378ADD',
-                        'color': '#378ADD',
-                        'weight': 1,
-                        'fillOpacity': 0.3
-                    }
-                ).add_to(m)
 
             # Add color legend (gradient bar with labels)
             legend_html = """

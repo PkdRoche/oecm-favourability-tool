@@ -84,7 +84,7 @@ def synthetic_wdpa_gdf(synthetic_nuts2_gdf):
         {
             'WDPA_PID': [100001, 100002, 100003],
             'NAME': ['Test PA 1', 'Test PA 2', 'Test PA 3'],
-            'IUCN_CAT': ['Ia', 'III', 'V'],
+            'IUCN_MAX': ['Ia', 'III', 'V'],
             'DESIG': ['National Park', 'Natural Monument', 'Protected Landscape'],
             'DESIG_TYPE': ['National', 'National', 'National'],
             'STATUS': ['Designated', 'Designated', 'Designated'],

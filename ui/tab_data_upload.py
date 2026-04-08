@@ -140,10 +140,15 @@ def _save_project_ini(filepath: str) -> None:
     """
     config = configparser.ConfigParser()
 
+    # NUTS section
+    config['nuts'] = {}
+    nuts_path = st.session_state.get('nuts_file')
+    if nuts_path:
+        config['nuts']['path'] = str(nuts_path)
+
     # WDPA section
     config['wdpa'] = {}
     wdpa_path = st.session_state.get('wdpa_file')
-    # Prefer the original path over temp paths
     original_wdpa = st.session_state.get('_original_wdpa_path', wdpa_path)
     if original_wdpa:
         config['wdpa']['path'] = str(original_wdpa)
@@ -183,7 +188,14 @@ def _load_project_ini(filepath: str) -> dict:
     config = configparser.ConfigParser()
     config.read(filepath)
 
-    result = {'wdpa_path': None, 'raster_paths': {}, 'settings': {}, 'errors': []}
+    result = {'nuts_path': None, 'wdpa_path': None, 'raster_paths': {}, 'settings': {}, 'errors': []}
+
+    # NUTS
+    nuts_path = config.get('nuts', 'path', fallback=None)
+    if nuts_path and Path(nuts_path).exists():
+        result['nuts_path'] = nuts_path
+    elif nuts_path:
+        result['errors'].append(f"NUTS file not found: {nuts_path}")
 
     # WDPA
     wdpa_path = config.get('wdpa', 'path', fallback=None)
@@ -273,6 +285,12 @@ def render():
             if '_original_raster_paths' not in st.session_state:
                 st.session_state['_original_raster_paths'] = {}
 
+            # NUTS
+            if project.get('nuts_path'):
+                st.session_state['nuts_file'] = project['nuts_path']
+                st.session_state['nuts_direct_path'] = project['nuts_path']
+                st.session_state.pop('nuts_gdf_cache', None)
+
             # WDPA
             if project['wdpa_path']:
                 st.session_state['wdpa_file'] = project['wdpa_path']
@@ -323,6 +341,52 @@ def render():
         ('provisioning_es', 'Provisioning ES capacity'),
         ('landuse', 'Land use / land cover')
     ]
+
+    st.markdown("---")
+
+    # ===================================================================
+    # NUTS boundaries (study area selector)
+    # ===================================================================
+    st.subheader("NUTS Boundaries (Study Area)")
+    st.caption(
+        "Provide a local NUTS file (NUTS1/2/3). Accepted formats: GeoPackage (.gpkg), GeoJSON, "
+        "or a **ZIP archive** containing the Shapefile components (.shp + .dbf + .shx + .prj). "
+        "If left empty, the tool falls back to the Eurostat online service."
+    )
+
+    col_nuts_browse, col_nuts_clear = st.columns([1, 1])
+    with col_nuts_browse:
+        if st.button("Browse…", key='nuts_browse'):
+            chosen = _native_browse([
+                ("Vector layers", "*.gpkg *.geojson *.zip"),
+                ("All files", "*.*"),
+            ])
+            if chosen:
+                st.session_state['nuts_direct_path'] = chosen
+                st.session_state.pop('nuts_gdf_cache', None)
+    with col_nuts_clear:
+        if st.button("✕ Clear", key='nuts_clear'):
+            st.session_state['nuts_direct_path'] = ''
+            st.session_state['nuts_file'] = None
+            st.session_state.pop('nuts_gdf_cache', None)
+
+    nuts_path_input = st.text_input(
+        "NUTS file path",
+        key='nuts_direct_path',
+        placeholder=r"C:\data\NUTS_RG_01M_2021_3035.zip",
+        help="Path to a local NUTS GeoPackage (.gpkg), GeoJSON, or ZIP archive containing a Shapefile. Must contain NUTS_ID, LEVL_CODE and NUTS_NAME columns in any CRS.",
+    )
+
+    if nuts_path_input:
+        p = Path(nuts_path_input)
+        if p.exists():
+            st.session_state['nuts_file'] = str(p)
+            st.caption(f"✅ {p.name}")
+        else:
+            st.warning(f"File not found: {nuts_path_input}")
+            st.session_state['nuts_file'] = None
+    else:
+        st.session_state['nuts_file'] = None
 
     st.markdown("---")
 
@@ -668,7 +732,7 @@ def render():
             ### Vector Requirements (WDPA)
             - **Formats:** GeoPackage (.gpkg), Shapefile (.shp), or GeoJSON (.geojson)
             - **Required columns:**
-              - `IUCN_CAT`: IUCN category (Ia, Ib, II, III, IV, V, VI, Not Reported)
+              - `IUCN_MAX`: IUCN category (Ia, Ib, II, III, IV, V, VI, Not Reported)
               - `DESIG_TYPE`: Designation type (National, Regional, International)
               - `WDPA_NAME` or `name`: Protected area name
             - **Geometry:** Polygon or MultiPolygon in any CRS (will be reprojected to EPSG:3035)

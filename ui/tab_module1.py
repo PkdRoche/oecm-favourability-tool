@@ -67,37 +67,40 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
     if pa_gdf is None:
         st.info("WDPA file loaded. Click the button below to run the diagnostic.")
         if st.button("▶ Run Protection Network Diagnostic", type="primary", width='stretch'):
-            with st.spinner("Loading and classifying protected areas…"):
-                try:
-                    from modules.module1_protected_areas.wdpa_loader import (
-                        load_wdpa_local, filter_to_extent, classify_iucn
-                    )
-                    import yaml
-                    config_path = Path(__file__).parent.parent / "config" / "iucn_classification.yaml"
-                    with open(config_path, 'r', encoding='utf-8') as f:
-                        classification_table = yaml.safe_load(f)
-                    gdf = load_wdpa_local(wdpa_file)
-                    if st.session_state.get('exclude_marine_pa', True):
-                        if 'REALM' in gdf.columns:
-                            n_marine = int((gdf['REALM'] == 'Marine').sum())
-                            gdf = gdf[gdf['REALM'] != 'Marine'].copy()
-                            if n_marine:
-                                st.info(f"Excluded {n_marine} fully marine PA(s) (REALM = 'Marine').")
-                        elif 'MARINE' in gdf.columns:
-                            # Fallback for older WDPA exports using integer MARINE column
-                            n_marine = int((gdf['MARINE'] == 2).sum())
-                            gdf = gdf[gdf['MARINE'] != 2].copy()
-                            if n_marine:
-                                st.info(f"Excluded {n_marine} fully marine PA(s) (MARINE = 2).")
-                        else:
-                            st.caption("Neither REALM nor MARINE column found in WDPA file — marine filter not applied.")
-                    gdf = filter_to_extent(gdf, territory_geom)
-                    gdf = classify_iucn(gdf, classification_table)
-                    st.session_state['pa_gdf'] = gdf
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to load WDPA data: {e}")
-                    logger.exception("WDPA load failed")
+            status = st.empty()
+            status.info("Loading and classifying protected areas…")
+            try:
+                from modules.module1_protected_areas.wdpa_loader import (
+                    load_wdpa_local, filter_to_extent, classify_iucn
+                )
+                import yaml
+                config_path = Path(__file__).parent.parent / "config" / "iucn_classification.yaml"
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    classification_table = yaml.safe_load(f)
+                gdf = load_wdpa_local(wdpa_file)
+                if st.session_state.get('exclude_marine_pa', True):
+                    if 'REALM' in gdf.columns:
+                        n_marine = int((gdf['REALM'] == 'Marine').sum())
+                        gdf = gdf[gdf['REALM'] != 'Marine'].copy()
+                        if n_marine:
+                            st.info(f"Excluded {n_marine} fully marine PA(s) (REALM = 'Marine').")
+                    elif 'MARINE' in gdf.columns:
+                        # Fallback for older WDPA exports using integer MARINE column
+                        n_marine = int((gdf['MARINE'] == 2).sum())
+                        gdf = gdf[gdf['MARINE'] != 2].copy()
+                        if n_marine:
+                            st.info(f"Excluded {n_marine} fully marine PA(s) (MARINE = 2).")
+                    else:
+                        st.caption("Neither REALM nor MARINE column found in WDPA file — marine filter not applied.")
+                gdf = filter_to_extent(gdf, territory_geom)
+                gdf = classify_iucn(gdf, classification_table)
+                st.session_state['pa_gdf'] = gdf
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to load WDPA data: {e}")
+                logger.exception("WDPA load failed")
+            finally:
+                status.empty()
         return
 
     pa_gdf = st.session_state['pa_gdf']
@@ -259,6 +262,31 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
     pa_display = pa_gdf_4326.copy()
     pa_display['area_ha'] = (pa_gdf.geometry.area / 10000).round(2).values
 
+    # Filter invalid/empty geometries (folium expects GeoJSON geometries with coordinates)
+    if 'geometry' in pa_display.columns:
+        pa_display = pa_display[pa_display.geometry.notna()].copy()
+        pa_display = pa_display[~pa_display.geometry.is_empty].copy()
+        try:
+            pa_display = pa_display[pa_display.is_valid].copy()
+        except Exception:
+            pass
+
+        # Folium's bounds computation assumes geometries expose a GeoJSON 'coordinates' key;
+        # GeometryCollection uses 'geometries' instead and can trigger KeyError('coordinates').
+        # Keep only Polygon/MultiPolygon for display.
+        try:
+            geom_types = pa_display.geometry.geom_type
+            allowed = geom_types.isin(['Polygon', 'MultiPolygon'])
+            dropped = int((~allowed).sum())
+            if dropped:
+                logger.warning(
+                    f"Dropping {dropped} feature(s) with unsupported geometry types for folium: "
+                    f"{geom_types[~allowed].value_counts().to_dict()}"
+                )
+            pa_display = pa_display[allowed].copy()
+        except Exception:
+            pass
+
     # Deduplicate column names — folium/__geo_interface__ raises ValueError otherwise
     # (WDPA files sometimes have duplicate columns e.g. two 'NAME' columns)
     seen = {}
@@ -279,26 +307,30 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
     } if 'protection_class' in pa_display.columns else {}
 
     # Single GeoJson layer (replaces one folium object per PA — massive speed-up)
-    tooltip_fields   = [c for c in ['WDPA_NAME', 'protection_class', 'IUCN_CAT', 'area_ha']
+    iucn_col = 'IUCN_MAX' if 'IUCN_MAX' in pa_display.columns else 'IUCN_CAT'
+    tooltip_fields   = [c for c in ['WDPA_NAME', 'protection_class', iucn_col, 'area_ha']
                         if c in pa_display.columns]
     tooltip_aliases  = [a for c, a in [('WDPA_NAME', 'Name'), ('protection_class', 'Class'),
-                                        ('IUCN_CAT', 'IUCN Cat.'), ('area_ha', 'Area (ha)')]
+                                        (iucn_col, 'IUCN Cat.'), ('area_ha', 'Area (ha)')]
                         if c in pa_display.columns]
 
-    folium.GeoJson(
-        pa_display,
-        style_function=lambda feature: {
-            'fillColor': _colour_map.get(
-                feature['properties'].get('protection_class', 'unassigned'), '#B4B2A9'
-            ),
-            'color': _colour_map.get(
-                feature['properties'].get('protection_class', 'unassigned'), '#B4B2A9'
-            ),
-            'weight': 1,
-            'fillOpacity': 0.5
-        },
-        tooltip=folium.GeoJsonTooltip(fields=tooltip_fields, aliases=tooltip_aliases)
-    ).add_to(m)
+    if len(pa_display) > 0:
+        folium.GeoJson(
+            pa_display,
+            style_function=lambda feature: {
+                'fillColor': _colour_map.get(
+                    feature['properties'].get('protection_class', 'unassigned'), '#B4B2A9'
+                ),
+                'color': _colour_map.get(
+                    feature['properties'].get('protection_class', 'unassigned'), '#B4B2A9'
+                ),
+                'weight': 1,
+                'fillOpacity': 0.5
+            },
+            tooltip=folium.GeoJsonTooltip(fields=tooltip_fields, aliases=tooltip_aliases)
+        ).add_to(m)
+    else:
+        st.warning("No valid protected-area geometries to display on the map.")
 
     # Add legend
     legend_html = """
@@ -361,11 +393,12 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
 
         # IUCN category breakdown
         st.markdown("#### Coverage by IUCN Category")
-        if 'IUCN_CAT' in pa_gdf.columns:
+        iucn_col_stats = 'IUCN_MAX' if 'IUCN_MAX' in pa_gdf.columns else 'IUCN_CAT'
+        if iucn_col_stats in pa_gdf.columns:
             # Compute total union once — reused for TOTAL row (avoids 3× union_all)
             total_pa_area_ha = pa_gdf.geometry.union_all().area / 10000.0
             iucn_rows = []
-            for cat, grp in pa_gdf.groupby('IUCN_CAT'):
+            for cat, grp in pa_gdf.groupby(iucn_col_stats):
                 net_area = grp.geometry.union_all().area / 10000.0
                 iucn_rows.append({
                     'IUCN Category': cat,
@@ -442,31 +475,34 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
     st.subheader("Gap Analysis")
 
     if st.button("Run Gap Analysis"):
-        with st.spinner("Computing gap layers..."):
-            try:
-                # Compute gap layers
-                strict_gaps_gdf = strict_gaps(pa_gdf, territory_geom)
-                qual_gaps_gdf = qualitative_gaps(pa_gdf, territory_geom)
-                corridors_gdf = potential_corridors(pa_gdf, territory_geom, max_gap_m=5000.0)
+        status = st.empty()
+        status.info("Computing gap layers...")
+        try:
+            # Compute gap layers
+            strict_gaps_gdf = strict_gaps(pa_gdf, territory_geom)
+            qual_gaps_gdf = qualitative_gaps(pa_gdf, territory_geom)
+            corridors_gdf = potential_corridors(pa_gdf, territory_geom, max_gap_m=5000.0)
 
-                # Store layers in session state
-                st.session_state['gap_layers'] = {
-                    'strict_gaps': strict_gaps_gdf,
-                    'qualitative_gaps': qual_gaps_gdf,
-                    'corridors': corridors_gdf
-                }
+            # Store layers in session state
+            st.session_state['gap_layers'] = {
+                'strict_gaps': strict_gaps_gdf,
+                'qualitative_gaps': qual_gaps_gdf,
+                'corridors': corridors_gdf
+            }
 
-                # Store raw areas only — % computed dynamically from current
-                # territory_area_ha at render time (so they stay correct if
-                # the user switches territory without re-running the analysis)
-                st.session_state['gap_stats'] = {
-                    'strict_area':   strict_gaps_gdf.geometry.area.sum() / 10000.0 if len(strict_gaps_gdf) > 0 else 0.0,
-                    'qual_area':     qual_gaps_gdf.geometry.area.sum()   / 10000.0 if len(qual_gaps_gdf)   > 0 else 0.0,
-                    'corridor_area': corridors_gdf.geometry.area.sum()   / 10000.0 if len(corridors_gdf)   > 0 else 0.0,
-                }
+            # Store raw areas only — % computed dynamically from current
+            # territory_area_ha at render time (so they stay correct if
+            # the user switches territory without re-running the analysis)
+            st.session_state['gap_stats'] = {
+                'strict_area':   strict_gaps_gdf.geometry.area.sum() / 10000.0 if len(strict_gaps_gdf) > 0 else 0.0,
+                'qual_area':     qual_gaps_gdf.geometry.area.sum()   / 10000.0 if len(qual_gaps_gdf)   > 0 else 0.0,
+                'corridor_area': corridors_gdf.geometry.area.sum()   / 10000.0 if len(corridors_gdf)   > 0 else 0.0,
+            }
 
-            except Exception as e:
-                st.error(f"Gap analysis failed: {str(e)}")
+        except Exception as e:
+            st.error(f"Gap analysis failed: {str(e)}")
+        finally:
+            status.empty()
 
     # Display statistics + map whenever results are available in session state
     # (rendered OUTSIDE the button block so they survive Streamlit re-runs)
@@ -640,32 +676,35 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
             )
 
             if st.button("Compute Criterion Profiles"):
-                with st.spinner("Computing zonal statistics for all criteria..."):
-                    try:
-                        # Compute zonal statistics
-                        zonal_df = zonal_stats_by_pa_class(pa_gdf, raster_paths)
+                status = st.empty()
+                status.info("Computing zonal statistics for all criteria...")
+                try:
+                    # Compute zonal statistics
+                    zonal_df = zonal_stats_by_pa_class(pa_gdf, raster_paths)
 
-                        if len(zonal_df) == 0:
-                            st.warning("No zonal statistics computed (no valid overlaps)")
-                        else:
-                            # Store in session state
-                            st.session_state['zonal_stats'] = zonal_df
+                    if len(zonal_df) == 0:
+                        st.warning("No zonal statistics computed (no valid overlaps)")
+                    else:
+                        # Store in session state
+                        st.session_state['zonal_stats'] = zonal_df
 
-                            st.success(
-                                f"Computed statistics for {len(zonal_df['criterion'].unique())} criteria "
-                                f"across {len(zonal_df['pa_class'].unique())} protection classes"
-                            )
+                        st.success(
+                            f"Computed statistics for {len(zonal_df['criterion'].unique())} criteria "
+                            f"across {len(zonal_df['iucn_cat'].unique())} IUCN categories"
+                        )
 
-                    except Exception as e:
-                        st.error(f"Failed to compute zonal statistics: {str(e)}")
-                        logger.exception("Zonal statistics computation error:")
+                except Exception as e:
+                    st.error(f"Failed to compute zonal statistics: {str(e)}")
+                    logger.exception("Zonal statistics computation error:")
+                finally:
+                    status.empty()
 
             # Display results if available
             if 'zonal_stats' in st.session_state and st.session_state['zonal_stats'] is not None:
                 zonal_df = st.session_state['zonal_stats']
 
                 # Row 1: Grouped bar chart
-                st.markdown("#### Mean Criterion Scores by Protection Class")
+                st.markdown("#### Mean Criterion Scores by IUCN Category")
                 st.caption(
                     "All criteria normalised to [0–1] for display. "
                     "Anthropogenic pressure is inverted (lower raw value = higher score). "
@@ -675,36 +714,31 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                 try:
                     import plotly.express as px
 
-                    # Normalise each criterion to [0-1] for comparable display
-                    # Exclude 'landuse' — CLC codes are categorical, mean is meaningless
-                    chart_data = zonal_df[zonal_df['criterion'] != 'landuse'][['criterion', 'pa_class', 'mean']].copy()
+                    chart_data = zonal_df[zonal_df['criterion'] != 'landuse'][['criterion', 'iucn_cat', 'mean']].copy()
                     for crit in chart_data['criterion'].unique():
                         mask = chart_data['criterion'] == crit
                         vals = chart_data.loc[mask, 'mean']
                         vmin, vmax = vals.min(), vals.max()
                         if vmax > vmin:
                             chart_data.loc[mask, 'mean'] = (vals - vmin) / (vmax - vmin)
-                        # Invert anthropogenic pressure (high pressure = bad)
                         if crit == 'anthropogenic_pressure':
                             chart_data.loc[mask, 'mean'] = 1.0 - chart_data.loc[mask, 'mean']
 
-                    # Sort PA classes: protection classes first, then 'outside'
-                    pa_class_order = sorted([c for c in chart_data['pa_class'].unique() if c != 'outside'])
-                    if 'outside' in chart_data['pa_class'].unique():
-                        pa_class_order.append('outside')
+                    cat_order = sorted([c for c in chart_data['iucn_cat'].unique() if c != 'outside'])
+                    if 'outside' in chart_data['iucn_cat'].unique():
+                        cat_order.append('outside')
 
-                    # Create grouped bar chart
                     fig = px.bar(
                         chart_data,
                         x='criterion',
                         y='mean',
-                        color='pa_class',
+                        color='iucn_cat',
                         barmode='group',
-                        category_orders={'pa_class': pa_class_order},
+                        category_orders={'iucn_cat': cat_order},
                         labels={
                             'criterion': 'Criterion',
                             'mean': 'Normalised Score [0–1]',
-                            'pa_class': 'Protection Class'
+                            'iucn_cat': 'IUCN Category'
                         },
                         title='',
                         color_discrete_sequence=px.colors.qualitative.Set2
@@ -725,40 +759,34 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                     st.plotly_chart(fig, width='stretch')
 
                 except ImportError:
-                    # Fallback to simpler visualization if plotly not available
                     st.warning("Plotly not available. Install plotly for interactive charts.")
                     st.bar_chart(
                         zonal_df[zonal_df['criterion'] != 'landuse'].pivot(
-                            index='criterion', columns='pa_class', values='mean'
+                            index='criterion', columns='iucn_cat', values='mean'
                         )
                     )
 
                 # Row 2: Summary pivot table (continuous criteria only)
-                st.markdown("#### Summary: Mean Scores by PA Class")
+                st.markdown("#### Summary: Mean Scores by IUCN Category")
 
                 try:
                     summary_df = criterion_coverage_summary(
                         zonal_df[zonal_df['criterion'] != 'landuse']
                     )
 
-                    # Format for display
                     display_summary = summary_df.copy()
                     for col in display_summary.columns:
                         display_summary[col] = display_summary[col].apply(lambda x: f"{x:.3f}" if pd.notna(x) else "—")
 
-                    st.dataframe(
-                        display_summary,
-                        width='stretch'
-                    )
+                    st.dataframe(display_summary, width='stretch')
 
                 except Exception as e:
                     st.error(f"Failed to generate summary table: {str(e)}")
 
                 # Row 3: Expandable detailed statistics
                 with st.expander("Detailed Statistics (min/median/max/std)"):
-                    st.markdown("**Per-criterion box-plot statistics (continuous criteria only):**")
+                    st.markdown("**Per-criterion statistics by IUCN category (continuous criteria only):**")
 
-                    # Create detailed table — exclude landuse (categorical)
                     detailed_stats = []
 
                     for criterion in zonal_df['criterion'].unique():
@@ -766,14 +794,14 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                             continue
                         criterion_data = zonal_df[zonal_df['criterion'] == criterion]
 
-                        for pa_class in criterion_data['pa_class'].unique():
-                            class_data = criterion_data[criterion_data['pa_class'] == pa_class]
+                        for iucn_cat in criterion_data['iucn_cat'].unique():
+                            class_data = criterion_data[criterion_data['iucn_cat'] == iucn_cat]
 
                             if len(class_data) > 0:
                                 row = class_data.iloc[0]
                                 detailed_stats.append({
                                     'Criterion': criterion,
-                                    'PA Class': pa_class,
+                                    'IUCN Category': iucn_cat,
                                     'Min': f"{row['min']:.3f}",
                                     'Median': f"{row['median']:.3f}",
                                     'Max': f"{row['max']:.3f}",
@@ -782,12 +810,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                                 })
 
                     detailed_df = pd.DataFrame(detailed_stats)
-
-                    st.dataframe(
-                        detailed_df,
-                        hide_index=True,
-                        width='stretch'
-                    )
+                    st.dataframe(detailed_df, hide_index=True, width='stretch')
 
                 # Row 4: CLC land use class breakdown
                 if 'landuse' in st.session_state.get('criterion_raster_paths', {}):

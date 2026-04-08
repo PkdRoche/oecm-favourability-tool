@@ -8,7 +8,7 @@ import geopandas as gpd
 import rasterio
 from rasterio.mask import mask
 from rasterio.warp import reproject, Resampling, calculate_default_transform
-from shapely.geometry import mapping
+from shapely.geometry import mapping, box
 from shapely.ops import unary_union
 
 logger = logging.getLogger(__name__)
@@ -20,17 +20,17 @@ def zonal_stats_by_pa_class(
     nodata: Optional[float] = None
 ) -> pd.DataFrame:
     """
-    Compute zonal statistics of MCE criterion rasters within protected areas.
+    Compute zonal statistics of MCE criterion rasters within protected areas,
+    grouped by IUCN category.
 
-    For each (criterion × PA class) combination, masks the raster to the PA
-    class polygons and computes summary statistics: mean, median, std, min, max,
-    and pixel count. Also computes statistics for areas outside all PAs.
+    For each (criterion × IUCN category) combination, masks the raster to the
+    matching PA polygons and computes summary statistics: mean, median, std, min,
+    max, and pixel count. Also computes statistics for areas outside all PAs.
 
     Parameters
     ----------
     pa_gdf : gpd.GeoDataFrame
-        Protected areas GeoDataFrame with 'protection_class' column (output of
-        classify_iucn() in wdpa_loader.py). Must be in EPSG:3035.
+        Protected areas GeoDataFrame with 'IUCN_CAT' column. Must be in EPSG:3035.
     raster_paths : dict
         Dictionary mapping criterion name (str) to GeoTIFF file path.
         Example: {"ecosystem_condition": "path/to/condition.tif"}
@@ -43,37 +43,8 @@ def zonal_stats_by_pa_class(
     pd.DataFrame
         Tidy DataFrame with columns:
         - criterion : criterion name
-        - pa_class : protection class (or 'outside' for unprotected areas)
-        - mean : mean pixel value
-        - median : median pixel value
-        - std : standard deviation
-        - min : minimum pixel value
-        - max : maximum pixel value
-        - pixel_count : number of valid pixels
-
-    Raises
-    ------
-    ValueError
-        If pa_gdf CRS is not EPSG:3035.
-
-    Notes
-    -----
-    - If a raster CRS differs from EPSG:3035, it is reprojected on-the-fly
-      (with a warning logged).
-    - Nodata pixels are excluded from all statistics.
-    - The 'outside' class represents areas not covered by any PA.
-
-    Examples
-    --------
-    >>> raster_paths = {
-    ...     "ecosystem_condition": "data/rasters/condition.tif",
-    ...     "connectivity": "data/rasters/connectivity.tif"
-    ... }
-    >>> stats_df = zonal_stats_by_pa_class(pa_gdf, raster_paths)
-    >>> print(stats_df.head())
-         criterion     pa_class   mean  median   std   min   max  pixel_count
-    0   ecosystem_condition  strict_core  0.75    0.80  0.12  0.20  1.00      1500
-    1   ecosystem_condition   regulatory  0.65    0.68  0.15  0.10  0.95      2000
+        - iucn_cat : IUCN category (or 'outside' for unprotected areas)
+        - mean, median, std, min, max, pixel_count
     """
     # Verify CRS
     if pa_gdf.crs != 'EPSG:3035':
@@ -82,14 +53,14 @@ def zonal_stats_by_pa_class(
             f"Current CRS: {pa_gdf.crs}"
         )
 
-    # Verify protection_class column
-    if 'protection_class' not in pa_gdf.columns:
-        raise ValueError("PA GeoDataFrame must have 'protection_class' column")
+    # Verify IUCN_CAT column
+    if 'IUCN_CAT' not in pa_gdf.columns:
+        raise ValueError("PA GeoDataFrame must have 'IUCN_CAT' column")
 
     if len(pa_gdf) == 0:
         logger.warning("PA GeoDataFrame is empty, returning empty statistics")
         return pd.DataFrame(columns=[
-            'criterion', 'pa_class', 'mean', 'median', 'std', 'min', 'max', 'pixel_count'
+            'criterion', 'iucn_cat', 'mean', 'median', 'std', 'min', 'max', 'pixel_count'
         ])
 
     results = []
@@ -112,27 +83,57 @@ def zonal_stats_by_pa_class(
                 # Determine nodata value
                 nodata_value = nodata if nodata is not None else src.nodata
 
-                # Get PA classes
-                pa_classes = pa_gdf['protection_class'].unique()
+                # Get IUCN categories
+                iucn_categories = pa_gdf['IUCN_CAT'].unique()
 
-                # Reproject entire PA GeoDataFrame once (not once per class)
+                # Reproject entire PA GeoDataFrame once (not once per category)
                 if str(raster_crs).upper() != 'EPSG:3035':
                     logger.warning(
                         f"Raster CRS ({raster_crs}) differs from EPSG:3035. "
-                        f"Reprojecting PA geometries once for all classes."
+                        f"Reprojecting PA geometries once for all categories."
                     )
                     pa_gdf_masked = pa_gdf.to_crs(raster_crs)
                 else:
                     pa_gdf_masked = pa_gdf
 
-                # Process each PA class
-                for pa_class in pa_classes:
-                    class_gdf = pa_gdf_masked[pa_gdf_masked['protection_class'] == pa_class]
+                # Process each IUCN category
+                for iucn_cat in iucn_categories:
+                    class_gdf = pa_gdf_masked[pa_gdf_masked['IUCN_CAT'] == iucn_cat]
 
                     # Union all geometries for this class to avoid overlap
                     union_geom = unary_union(class_gdf.geometry)
 
-                    # Mask raster to this PA class
+                    # Skip empty unions early
+                    if getattr(union_geom, 'is_empty', False):
+                        logger.warning(
+                            f"Empty geometry union for class {pa_class} ({criterion_name}); skipping"
+                        )
+                        continue
+
+                    # If the union is a GeometryCollection, folium/mapping can behave oddly;
+                    # flatten to its unary union of parts.
+                    try:
+                        if union_geom.geom_type == 'GeometryCollection':
+                            union_geom = unary_union(getattr(union_geom, 'geoms', []))
+                    except Exception:
+                        pass
+
+                    # Fast extent-based intersection test against raster bounds.
+                    # This avoids rasterio.mask raising ValueError("Input shapes do not overlap raster")
+                    # and provides actionable logs.
+                    try:
+                        rb = src.bounds
+                        raster_bounds_geom = box(rb.left, rb.bottom, rb.right, rb.top)
+                        if not union_geom.intersects(raster_bounds_geom):
+                            logger.warning(
+                                f"No raster overlap for {criterion_name} in class {pa_class}. "
+                                f"Raster bounds={rb}, geom bounds={getattr(union_geom, 'bounds', None)}"
+                            )
+                            continue
+                    except Exception:
+                        pass
+
+                    # Mask raster to this IUCN category
                     try:
                         masked_array, _ = mask(
                             src,
@@ -148,96 +149,87 @@ def zonal_stats_by_pa_class(
                             valid_pixels = pixels[pixels != nodata_value]
                         else:
                             valid_pixels = pixels
-                        # Always remove NaN (temp rasters may store nodata as NaN
-                        # even when nodata metadata says a sentinel value like -99999)
                         valid_pixels = valid_pixels[~np.isnan(valid_pixels)]
 
-                        # Compute statistics
                         if len(valid_pixels) > 0:
-                            stats = {
+                            results.append({
                                 'criterion': criterion_name,
-                                'pa_class': pa_class,
+                                'iucn_cat': iucn_cat,
                                 'mean': float(np.mean(valid_pixels)),
                                 'median': float(np.median(valid_pixels)),
                                 'std': float(np.std(valid_pixels)),
                                 'min': float(np.min(valid_pixels)),
                                 'max': float(np.max(valid_pixels)),
                                 'pixel_count': int(len(valid_pixels))
-                            }
-                            results.append(stats)
+                            })
                         else:
                             logger.warning(
-                                f"No valid pixels for {criterion_name} in class {pa_class}"
+                                f"No valid pixels for {criterion_name} in IUCN cat {iucn_cat}"
                             )
 
                     except ValueError as e:
                         logger.warning(
-                            f"Failed to mask {criterion_name} for class {pa_class}: {e}"
+                            f"Failed to mask {criterion_name} for IUCN cat {iucn_cat}: {e}"
                         )
                         continue
 
                 # Compute statistics for areas OUTSIDE all PAs
-                logger.info(f"Computing statistics for areas outside PAs ({criterion_name})")
+                # Use a separate try/except so errors here don't swallow per-class results
+                try:
+                    logger.info(f"Computing outside-PA statistics for {criterion_name}")
+                    all_pa_union = unary_union(pa_gdf_masked.geometry)
 
-                # Reuse already-reprojected GeoDataFrame — union computed once
-                all_pa_union = unary_union(pa_gdf_masked.geometry)
+                    if getattr(all_pa_union, 'is_empty', True):
+                        logger.warning(f"Empty PA union for {criterion_name}; skipping outside stats")
+                    else:
+                        from rasterio.features import geometry_mask
+                        raster_data = src.read(1)
+                        outside_mask = geometry_mask(
+                            [mapping(all_pa_union)],
+                            transform=src.transform,
+                            invert=False,   # True = outside all PAs
+                            out_shape=raster_data.shape
+                        )
+                        outside_pixels = raster_data[outside_mask].astype(np.float64)
+                        if nodata_value is not None:
+                            outside_pixels = outside_pixels[outside_pixels != nodata_value]
+                        outside_pixels = outside_pixels[~np.isnan(outside_pixels)]
 
-                # Read entire raster
-                raster_data = src.read(1)
-
-                # Create mask from PA union
-                from rasterio.features import geometry_mask
-                pa_mask = geometry_mask(
-                    [mapping(all_pa_union)],
-                    transform=src.transform,
-                    invert=False,  # False = mask out PA areas
-                    out_shape=raster_data.shape
-                )
-
-                # Extract pixels OUTSIDE PAs
-                outside_pixels = raster_data[pa_mask].astype(np.float64)
-
-                # Filter out nodata
-                if nodata_value is not None:
-                    outside_pixels = outside_pixels[outside_pixels != nodata_value]
-                # Always remove NaN regardless of nodata convention
-                outside_pixels = outside_pixels[~np.isnan(outside_pixels)]
-
-                # Compute statistics for outside areas
-                if len(outside_pixels) > 0:
-                    stats = {
-                        'criterion': criterion_name,
-                        'pa_class': 'outside',
-                        'mean': float(np.mean(outside_pixels)),
-                        'median': float(np.median(outside_pixels)),
-                        'std': float(np.std(outside_pixels)),
-                        'min': float(np.min(outside_pixels)),
-                        'max': float(np.max(outside_pixels)),
-                        'pixel_count': int(len(outside_pixels))
-                    }
-                    results.append(stats)
-                else:
-                    logger.warning(
-                        f"No valid pixels outside PAs for {criterion_name}"
-                    )
+                        if len(outside_pixels) > 0:
+                            results.append({
+                                'criterion': criterion_name,
+                                'iucn_cat': 'outside',
+                                'mean': float(np.mean(outside_pixels)),
+                                'median': float(np.median(outside_pixels)),
+                                'std': float(np.std(outside_pixels)),
+                                'min': float(np.min(outside_pixels)),
+                                'max': float(np.max(outside_pixels)),
+                                'pixel_count': int(len(outside_pixels))
+                            })
+                        else:
+                            logger.warning(
+                                f"No valid pixels outside PAs for {criterion_name} "
+                                f"(nodata={nodata_value}, outside pixel count before filter="
+                                f"{np.sum(outside_mask)})"
+                            )
+                except Exception as e:
+                    logger.error(f"Outside-PA stats failed for {criterion_name}: {e}", exc_info=True)
 
         except Exception as e:
-            logger.error(f"Failed to process raster {raster_path}: {e}")
+            logger.error(f"Failed to process raster {raster_path}: {e}", exc_info=True)
             continue
 
     # Convert to DataFrame
     if len(results) == 0:
         logger.warning("No zonal statistics computed")
         return pd.DataFrame(columns=[
-            'criterion', 'pa_class', 'mean', 'median', 'std', 'min', 'max', 'pixel_count'
+            'criterion', 'iucn_cat', 'mean', 'median', 'std', 'min', 'max', 'pixel_count'
         ])
 
     df = pd.DataFrame(results)
-
     logger.info(
-        f"Zonal statistics computed for {len(df)} (criterion × PA class) combinations"
+        f"Zonal statistics computed for {len(df)} (criterion × IUCN category) combinations"
     )
-
     return df
 
 
@@ -280,7 +272,7 @@ def criterion_coverage_summary(
         return pd.DataFrame()
 
     # Verify required columns
-    required_cols = ['criterion', 'pa_class', 'mean']
+    required_cols = ['criterion', 'iucn_cat', 'mean']
     missing_cols = [col for col in required_cols if col not in zonal_df.columns]
     if missing_cols:
         raise ValueError(
@@ -289,7 +281,7 @@ def criterion_coverage_summary(
 
     # Create pivot table
     pivot = zonal_df.pivot(
-        index='pa_class',
+        index='iucn_cat',
         columns='criterion',
         values='mean'
     )
@@ -300,7 +292,7 @@ def criterion_coverage_summary(
         pivot = pivot.reindex(other_classes + ['outside'])
 
     logger.info(
-        f"Coverage summary created: {len(pivot)} PA classes × "
+        f"Coverage summary created: {len(pivot)} IUCN categories × "
         f"{len(pivot.columns)} criteria"
     )
 

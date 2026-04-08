@@ -327,8 +327,12 @@ def classify_iucn(
 
     # Ensure required columns exist
     if 'IUCN_MAX' not in gdf.columns:
-        logger.warning("IUCN_MAX column not found, creating empty column")
-        gdf['IUCN_MAX'] = ''
+        if 'IUCN_CAT' in gdf.columns:
+            logger.info("IUCN_MAX column not found — falling back to IUCN_CAT")
+            gdf['IUCN_MAX'] = gdf['IUCN_CAT']
+        else:
+            logger.warning("IUCN_MAX column not found, creating empty column")
+            gdf['IUCN_MAX'] = ''
 
     # Accept DESIG or DESIG_ENG (WDPA uses DESIG_ENG in most exports)
     if 'DESIG' not in gdf.columns and 'DESIG_ENG' in gdf.columns:

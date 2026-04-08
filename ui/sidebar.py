@@ -3,12 +3,6 @@ import streamlit as st
 import yaml
 from pathlib import Path
 from shapely.geometry import box
-from modules.utils.nuts2_loader import (
-    load_nuts2,
-    get_countries,
-    get_nuts2_for_country,
-    get_nuts2_geometry
-)
 
 
 def load_config_defaults():
@@ -80,96 +74,171 @@ def render_sidebar():
     st.sidebar.markdown("---")
 
     # ===================================================================
-    # Section 1: Study area (NUTS2 selector)
+    # Section 1: Study area
     # ===================================================================
     st.sidebar.header("1. Study Area")
 
-    # Initialize study area variables
     study_area_nuts_id = None
     study_area_name = None
     study_area_geometry = None
-    selected_country = None
 
-    # Try to load NUTS2 boundaries
-    nuts2_load_failed = False
-    nuts2_gdf = None
+    nuts_file = st.session_state.get('nuts_file')
 
-    try:
-        nuts2_gdf = load_nuts2(year=2021, scale="20M")
-    except Exception as e:
-        nuts2_load_failed = True
-        st.sidebar.warning(
-            f"Could not load NUTS2 boundaries from Eurostat: {e}\n\n"
-            "Falling back to manual bounding box input."
-        )
+    if nuts_file and Path(nuts_file).exists():
+        # ── Local NUTS file ──────────────────────────────────────────────
+        @st.cache_data(show_spinner="Loading NUTS boundaries…")
+        def _load_nuts_local(path: str):
+            import geopandas as gpd, zipfile, tempfile, os
+            # Extract ZIP to a temp dir so all sidecar files (.dbf, .shx, .prj) are present
+            if path.lower().endswith('.zip'):
+                tmp_dir = tempfile.mkdtemp()
+                with zipfile.ZipFile(path, 'r') as zf:
+                    zf.extractall(tmp_dir)
+                # Find the main vector file inside the ZIP
+                read_path = None
+                for ext in ('.gpkg', '.shp', '.geojson'):
+                    matches = [os.path.join(tmp_dir, f) for f in os.listdir(tmp_dir) if f.lower().endswith(ext)]
+                    if matches:
+                        read_path = matches[0]
+                        break
+                if read_path is None:
+                    raise ValueError("No .gpkg, .shp or .geojson found inside the ZIP archive.")
+            else:
+                read_path = path
+            gdf = gpd.read_file(read_path)
+            # Normalise column names (Eurostat vs. GISCO naming variations)
+            col_map = {}
+            cols_lower = {c.lower(): c for c in gdf.columns}
+            for std, variants in [
+                ('NUTS_ID',   ['nuts_id', 'nutsid', 'id']),
+                ('NUTS_NAME', ['nuts_name', 'name_latn', 'name', 'nuts_name']),
+                ('LEVL_CODE', ['levl_code', 'levl', 'level', 'nuts_level']),
+                ('CNTR_CODE', ['cntr_code', 'cntr', 'country_code']),
+            ]:
+                if std not in gdf.columns:
+                    for v in variants:
+                        if v in cols_lower:
+                            col_map[cols_lower[v]] = std
+                            break
+            if col_map:
+                gdf = gdf.rename(columns=col_map)
+            if gdf.crs is None:
+                gdf = gdf.set_crs('EPSG:4326')
+            if gdf.crs.to_epsg() != 3035:
+                gdf = gdf.to_crs('EPSG:3035')
+            return gdf
 
-    if not nuts2_load_failed and nuts2_gdf is not None:
-        # Two-step selector: Country → NUTS2 Region
-        countries = get_countries(nuts2_gdf)
+        try:
+            nuts_gdf = _load_nuts_local(nuts_file)
 
-        # Default to France if available
-        default_country_idx = countries.index("FR") if "FR" in countries else 0
+            # Available NUTS levels
+            if 'LEVL_CODE' in nuts_gdf.columns:
+                available_levels = sorted(nuts_gdf['LEVL_CODE'].unique().tolist())
+            else:
+                available_levels = [2]
 
-        selected_country = st.sidebar.selectbox(
-            "Country",
-            options=countries,
-            index=default_country_idx,
-            help="Select country (2-letter ISO code)"
-        )
+            level_labels = {0: 'NUTS 0 (Country)', 1: 'NUTS 1', 2: 'NUTS 2', 3: 'NUTS 3'}
+            level_options = [l for l in available_levels if l in level_labels]
 
-        # Filter NUTS2 regions for selected country
-        nuts2_regions = get_nuts2_for_country(nuts2_gdf, selected_country)
-
-        # Create display options: "Region Name (NUTS_ID)"
-        region_options = [
-            f"{row.NUTS_NAME} ({row.NUTS_ID})"
-            for _, row in nuts2_regions.iterrows()
-        ]
-
-        # Extract NUTS_IDs for lookup
-        region_nuts_ids = nuts2_regions['NUTS_ID'].tolist()
-
-        if len(region_options) > 0:
-            selected_region_idx = st.sidebar.selectbox(
-                "NUTS2 Region",
-                options=range(len(region_options)),
-                format_func=lambda i: region_options[i],
-                help="Select NUTS2 administrative region"
+            selected_level = st.sidebar.selectbox(
+                "NUTS level",
+                options=level_options,
+                format_func=lambda l: level_labels.get(l, f"Level {l}"),
+                index=min(2, len(level_options) - 1) if len(level_options) > 2 else 0,
             )
 
-            # Retrieve selected NUTS_ID and geometry
-            study_area_nuts_id = region_nuts_ids[selected_region_idx]
-            study_area_name = nuts2_regions.iloc[selected_region_idx]['NUTS_NAME']
-            study_area_geometry = get_nuts2_geometry(nuts2_gdf, study_area_nuts_id)
+            level_gdf = nuts_gdf[nuts_gdf['LEVL_CODE'] == selected_level].copy() \
+                if 'LEVL_CODE' in nuts_gdf.columns else nuts_gdf
 
-            # Display region details
-            if study_area_geometry is not None:
-                area_km2 = study_area_geometry.area / 1_000_000  # EPSG:3035 is in meters
-                st.sidebar.caption(
-                    f"**{study_area_nuts_id}** — {area_km2:,.0f} km²"
+            # Country filter
+            if 'CNTR_CODE' in level_gdf.columns:
+                countries = sorted(level_gdf['CNTR_CODE'].unique().tolist())
+                default_idx = countries.index('FR') if 'FR' in countries else 0
+                selected_country = st.sidebar.selectbox(
+                    "Country", options=countries, index=default_idx
                 )
-        else:
-            st.sidebar.error(f"No NUTS2 regions found for country {selected_country}")
+                level_gdf = level_gdf[level_gdf['CNTR_CODE'] == selected_country]
+
+            name_col = 'NUTS_NAME' if 'NUTS_NAME' in level_gdf.columns else level_gdf.columns[0]
+            level_gdf = level_gdf.sort_values(name_col).reset_index(drop=True)
+
+            region_options = [
+                f"{row[name_col]} ({row['NUTS_ID']})" if 'NUTS_ID' in level_gdf.columns
+                else str(row[name_col])
+                for _, row in level_gdf.iterrows()
+            ]
+
+            if region_options:
+                selected_idx = st.sidebar.selectbox(
+                    f"NUTS {selected_level} Region",
+                    options=range(len(region_options)),
+                    format_func=lambda i: region_options[i],
+                )
+                selected_row = level_gdf.iloc[selected_idx]
+                study_area_geometry = selected_row.geometry
+                study_area_name = str(selected_row.get(name_col, ''))
+                study_area_nuts_id = str(selected_row['NUTS_ID']) \
+                    if 'NUTS_ID' in level_gdf.columns else study_area_name
+                area_km2 = study_area_geometry.area / 1_000_000
+                st.sidebar.caption(f"**{study_area_nuts_id}** — {area_km2:,.0f} km²")
+            else:
+                st.sidebar.warning("No regions found for this selection.")
+
+        except Exception as e:
+            st.sidebar.error(f"Failed to load NUTS file: {e}")
 
     else:
-        # Fallback: manual bounding box input
-        st.sidebar.info("Enter bounding box coordinates in EPSG:3035 (meters)")
+        # ── Eurostat online fallback ─────────────────────────────────────
+        from modules.utils.nuts2_loader import load_nuts2, get_countries, get_nuts2_for_country, get_nuts2_geometry
 
-        col1, col2 = st.sidebar.columns(2)
-        with col1:
-            xmin = st.number_input("X min", value=2500000.0, step=1000.0)
-            ymin = st.number_input("Y min", value=1500000.0, step=1000.0)
-        with col2:
-            xmax = st.number_input("X max", value=3500000.0, step=1000.0)
-            ymax = st.number_input("Y max", value=2500000.0, step=1000.0)
+        nuts2_gdf = None
+        try:
+            nuts2_gdf = load_nuts2(year=2021, scale="20M")
+        except Exception as e:
+            st.sidebar.warning(
+                f"Could not load NUTS2 boundaries from Eurostat: {e}\n\n"
+                "Upload a local NUTS file in the **① Data Upload** tab, "
+                "or fall back to manual bounding box below."
+            )
 
-        # Create bounding box geometry
-        study_area_geometry = box(xmin, ymin, xmax, ymax)
-        study_area_name = f"Custom bbox ({xmin:.0f}, {ymin:.0f}, {xmax:.0f}, {ymax:.0f})"
-        study_area_nuts_id = "CUSTOM"
-
-        area_km2 = study_area_geometry.area / 1_000_000
-        st.sidebar.caption(f"Area: {area_km2:,.0f} km²")
+        if nuts2_gdf is not None:
+            countries = get_countries(nuts2_gdf)
+            default_country_idx = countries.index("FR") if "FR" in countries else 0
+            selected_country = st.sidebar.selectbox(
+                "Country", options=countries, index=default_country_idx
+            )
+            nuts2_regions = get_nuts2_for_country(nuts2_gdf, selected_country)
+            region_options = [
+                f"{row.NUTS_NAME} ({row.NUTS_ID})" for _, row in nuts2_regions.iterrows()
+            ]
+            region_nuts_ids = nuts2_regions['NUTS_ID'].tolist()
+            if region_options:
+                selected_region_idx = st.sidebar.selectbox(
+                    "NUTS2 Region",
+                    options=range(len(region_options)),
+                    format_func=lambda i: region_options[i],
+                )
+                study_area_nuts_id = region_nuts_ids[selected_region_idx]
+                study_area_name = nuts2_regions.iloc[selected_region_idx]['NUTS_NAME']
+                study_area_geometry = get_nuts2_geometry(nuts2_gdf, study_area_nuts_id)
+                if study_area_geometry is not None:
+                    area_km2 = study_area_geometry.area / 1_000_000
+                    st.sidebar.caption(f"**{study_area_nuts_id}** — {area_km2:,.0f} km²")
+        else:
+            # Last resort: manual bounding box
+            st.sidebar.info("Enter bounding box coordinates in EPSG:3035 (meters)")
+            col1, col2 = st.sidebar.columns(2)
+            with col1:
+                xmin = st.number_input("X min", value=2500000.0, step=1000.0)
+                ymin = st.number_input("Y min", value=1500000.0, step=1000.0)
+            with col2:
+                xmax = st.number_input("X max", value=3500000.0, step=1000.0)
+                ymax = st.number_input("Y max", value=2500000.0, step=1000.0)
+            study_area_geometry = box(xmin, ymin, xmax, ymax)
+            study_area_name = f"Custom bbox ({xmin:.0f}, {ymin:.0f}, {xmax:.0f}, {ymax:.0f})"
+            study_area_nuts_id = "CUSTOM"
+            area_km2 = study_area_geometry.area / 1_000_000
+            st.sidebar.caption(f"Area: {area_km2:,.0f} km²")
 
     # Display settings
     if settings:
