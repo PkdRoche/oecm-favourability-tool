@@ -362,62 +362,51 @@ def recode_landuse(
     """
     logger.info("Recoding land use to ordinal scores")
 
-    # Initialize output as zeros (default for unknown/incompatible)
-    scores = np.zeros(landuse_array.shape, dtype=np.float64)
-
     # Build lookup from integer code to score
-    # We need to handle CLC hierarchical codes
     code_to_score = {}
-
     for clc_code, info in compatibility_table.items():
-        if info.get('status') == 'eliminatory' or info.get('score') is None:
-            # Eliminatory classes get score 0
-            score = 0.0
-        else:
-            score = float(info.get('score', 0.0))
-
-        # Convert CLC code to integer encoding(s)
-        # CLC "1.1" -> 11, "3.1" -> 31, "4.1" -> 41, etc.
-        if isinstance(clc_code, str):
-            if '.' in clc_code:
-                parts = clc_code.split('.')
-                if len(parts) == 2:
-                    int_code = int(parts[0]) * 10 + int(parts[1])
-                    code_to_score[int_code] = score
-                elif len(parts) == 3:
-                    int_code = int(parts[0]) * 100 + int(parts[1]) * 10 + int(parts[2])
-                    code_to_score[int_code] = score
-            else:
-                # Level 1 code
-                int_code = int(clc_code)
-                code_to_score[int_code] = score
+        score = 0.0 if (info.get('status') == 'eliminatory' or info.get('score') is None) \
+                else float(info.get('score', 0.0))
+        if isinstance(clc_code, str) and '.' in clc_code:
+            parts = clc_code.split('.')
+            if len(parts) == 2:
+                code_to_score[int(parts[0]) * 10 + int(parts[1])] = score
+            elif len(parts) == 3:
+                code_to_score[int(parts[0]) * 100 + int(parts[1]) * 10 + int(parts[2])] = score
         else:
             code_to_score[int(clc_code)] = score
 
-    # Apply lookup
-    unique_values = np.unique(landuse_array[~np.isnan(landuse_array.astype(float))])
-
-    for val in unique_values:
-        val_int = int(val)
-        # Try exact match first
-        if val_int in code_to_score:
-            mask = landuse_array == val_int
-            scores[mask] = code_to_score[val_int]
+    # Resolve each unique raster value once (with hierarchical fallback), then
+    # apply via fancy indexing — avoids one full-array comparison per CLC class.
+    unique_vals = np.unique(landuse_array[np.isfinite(landuse_array.astype(float))])
+    val_to_score = {}
+    for val in unique_vals:
+        v = int(val)
+        if v in code_to_score:
+            val_to_score[v] = code_to_score[v]
         else:
-            # Try hierarchical matching
-            # Check level 2 (divide by 10)
-            level2 = val_int // 10
+            level2 = v // 10
             if level2 in code_to_score:
-                mask = landuse_array == val_int
-                scores[mask] = code_to_score[level2]
+                val_to_score[v] = code_to_score[level2]
             else:
-                # Check level 1 (divide by 100 or 10)
-                level1 = val_int // 100 if val_int >= 100 else val_int // 10
-                if level1 in code_to_score:
-                    mask = landuse_array == val_int
-                    scores[mask] = code_to_score[level1]
+                level1 = v // 100 if v >= 100 else v // 10
+                val_to_score[v] = code_to_score.get(level1, 0.0)
 
-    logger.info(f"Recoded land use. Score range: [{np.min(scores):.2f}, {np.max(scores):.2f}]")
+    # Build a vectorised lookup array: map integer raster value → score in one pass
+    if len(unique_vals) > 0:
+        max_code = int(unique_vals.max()) + 1
+        lut = np.zeros(max_code, dtype=np.float32)
+        for v, s in val_to_score.items():
+            if 0 <= v < max_code:
+                lut[v] = s
+        land_int = landuse_array.astype(np.int32)
+        valid = (land_int >= 0) & (land_int < max_code)
+        scores = np.zeros(landuse_array.shape, dtype=np.float32)
+        scores[valid] = lut[land_int[valid]]
+    else:
+        scores = np.zeros(landuse_array.shape, dtype=np.float32)
+
+    logger.info(f"Recoded land use. Score range: [{scores.min():.2f}, {scores.max():.2f}]")
     return scores
 
 

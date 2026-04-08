@@ -363,12 +363,15 @@ def render():
             ])
             if chosen:
                 st.session_state['nuts_direct_path'] = chosen
+                st.session_state['nuts_file'] = chosen
                 st.session_state.pop('nuts_gdf_cache', None)
+                st.rerun()
     with col_nuts_clear:
         if st.button("✕ Clear", key='nuts_clear'):
             st.session_state['nuts_direct_path'] = ''
             st.session_state['nuts_file'] = None
             st.session_state.pop('nuts_gdf_cache', None)
+            st.rerun()
 
     nuts_path_input = st.text_input(
         "NUTS file path",

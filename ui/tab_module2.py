@@ -176,62 +176,63 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
             )
 
         try:
-            # Convert score_array to PNG using RdYlGn colormap
             import matplotlib.cm as mcm
-            from rasterio.warp import (transform_bounds, reproject,
-                                       calculate_default_transform, Resampling)
+            from rasterio.warp import (reproject, calculate_default_transform, Resampling)
             from rasterio.transform import array_bounds
 
             cmap = mcm.get_cmap('RdYlGn')
             norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
 
             # ------------------------------------------------------------------
-            # Reproject score_array from source CRS (EPSG:3035) to EPSG:4326
-            # so that the PNG pixels are in geographic space and align correctly
-            # with the Leaflet/folium basemap.
+            # Reproject score_array from EPSG:3035 → EPSG:4326 once and cache
+            # the result in session state.  Moving the threshold slider only
+            # recolours the cached array — no warp on every interaction.
             # ------------------------------------------------------------------
-            src_crs = profile['crs']
-            dst_crs = 'EPSG:4326'
+            _warp_key = st.session_state.get('_aligned_key')
+            _cached   = st.session_state.get('_score_4326_cache')
 
-            transform_4326, w_4326, h_4326 = calculate_default_transform(
-                src_crs, dst_crs,
-                profile['width'], profile['height'],
-                *array_bounds(profile['height'], profile['width'], profile['transform'])
-            )
+            if _cached is None or _cached.get('key') != _warp_key:
+                src_crs = profile['crs']
+                dst_crs = 'EPSG:4326'
+                transform_4326, w_4326, h_4326 = calculate_default_transform(
+                    src_crs, dst_crs,
+                    profile['width'], profile['height'],
+                    *array_bounds(profile['height'], profile['width'], profile['transform'])
+                )
+                score_4326 = np.full((h_4326, w_4326), np.nan, dtype=np.float32)
+                reproject(
+                    source=score_array.astype(np.float32),
+                    destination=score_4326,
+                    src_transform=profile['transform'],
+                    src_crs=src_crs,
+                    dst_transform=transform_4326,
+                    dst_crs=dst_crs,
+                    resampling=Resampling.nearest,
+                    src_nodata=np.nan,
+                    dst_nodata=np.nan
+                )
+                west, south, east, north = array_bounds(h_4326, w_4326, transform_4326)
+                st.session_state['_score_4326_cache'] = {
+                    'key': _warp_key,
+                    'score_4326': score_4326,
+                    'bounds': (west, south, east, north),
+                }
+            else:
+                score_4326 = _cached['score_4326']
+                west, south, east, north = _cached['bounds']
 
-            score_4326 = np.full((h_4326, w_4326), np.nan, dtype=np.float32)
-            reproject(
-                source=score_array.astype(np.float32),
-                destination=score_4326,
-                src_transform=profile['transform'],
-                src_crs=src_crs,
-                dst_transform=transform_4326,
-                dst_crs=dst_crs,
-                resampling=Resampling.nearest,
-                src_nodata=np.nan,
-                dst_nodata=np.nan
-            )
-
-            # Show only pixels at or above the map threshold — others are transparent
-            valid_mask_4326 = ~np.isnan(score_4326)
+            # Colour-map only the pixels at or above threshold (cheap, no warp)
+            valid_mask_4326   = ~np.isnan(score_4326)
             display_mask_4326 = valid_mask_4326 & (score_4326 >= map_threshold)
-            rgba = np.zeros((h_4326, w_4326, 4), dtype=np.uint8)
+            rgba = np.zeros((*score_4326.shape, 4), dtype=np.uint8)
             rgba[display_mask_4326] = (
                 cmap(norm(score_4326[display_mask_4326])) * 255
             ).astype(np.uint8)
 
-            # Convert to PIL Image
             img_pil = Image.fromarray(rgba, mode='RGBA')
-
-            # Convert to base64 for folium
             buffered = io.BytesIO()
             img_pil.save(buffered, format="PNG")
             img_base64 = base64.b64encode(buffered.getvalue()).decode()
-
-            # Bounds come directly from the reprojected transform — no extra
-            # transform_bounds call needed; these are already in EPSG:4326.
-            # array_bounds returns (west, south, east, north) = (left, bottom, right, top)
-            west, south, east, north = array_bounds(h_4326, w_4326, transform_4326)
 
             # Create folium map centered on bounds
             center_lat = (south + north) / 2

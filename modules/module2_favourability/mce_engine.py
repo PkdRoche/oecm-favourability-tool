@@ -15,6 +15,7 @@ compute_favourability
     Full MCE pipeline producing favourability scores and masks.
 """
 
+import functools
 import logging
 import numpy as np
 import yaml
@@ -280,22 +281,25 @@ def yager_owa(
     return result
 
 
+@functools.lru_cache(maxsize=1)
 def _load_criteria_config() -> dict:
-    """Load criteria defaults configuration."""
+    """Load criteria defaults configuration (cached after first read)."""
     config_path = Path(__file__).parent.parent.parent / "config" / "criteria_defaults.yaml"
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
 
+@functools.lru_cache(maxsize=1)
 def _load_transformation_config() -> dict:
-    """Load transformation function configuration."""
+    """Load transformation function configuration (cached after first read)."""
     config_path = Path(__file__).parent.parent.parent / "config" / "transformation_functions.yaml"
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
 
+@functools.lru_cache(maxsize=1)
 def _load_landuse_config() -> dict:
-    """Load land use compatibility configuration."""
+    """Load land use compatibility configuration (cached after first read)."""
     config_path = Path(__file__).parent.parent.parent / "config" / "land_use_compatibility.yaml"
     with open(config_path, "r") as f:
         return yaml.safe_load(f)

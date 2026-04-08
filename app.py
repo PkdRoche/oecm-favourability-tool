@@ -2,6 +2,8 @@
 import streamlit as st
 import logging
 import tempfile
+import yaml
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
@@ -10,6 +12,17 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+@st.cache_resource
+def _load_settings() -> dict:
+    """Load settings.yaml once for the lifetime of the server process."""
+    settings_path = Path(__file__).parent / "config" / "settings.yaml"
+    with open(settings_path, 'r') as f:
+        return yaml.safe_load(f)
+
+
+_settings = _load_settings()
 
 # ===================================================================
 # Page configuration
@@ -186,11 +199,6 @@ with tab4:
             )
 
         # Build hashable cache key from current raster paths + study area
-        import yaml
-        from pathlib import Path as _Path
-        settings_path = _Path(__file__).parent / "config" / "settings.yaml"
-        with open(settings_path, 'r') as _f:
-            _settings = yaml.safe_load(_f)
         target_resolution = _settings.get('resolution_m', 100.0)
         target_crs = _settings.get('crs', 'EPSG:3035')
         study_area_geom = parameters.get('study_area_geometry')

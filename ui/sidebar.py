@@ -162,11 +162,11 @@ def render_sidebar():
             name_col = 'NUTS_NAME' if 'NUTS_NAME' in level_gdf.columns else level_gdf.columns[0]
             level_gdf = level_gdf.sort_values(name_col).reset_index(drop=True)
 
-            region_options = [
-                f"{row[name_col]} ({row['NUTS_ID']})" if 'NUTS_ID' in level_gdf.columns
-                else str(row[name_col])
-                for _, row in level_gdf.iterrows()
-            ]
+            if 'NUTS_ID' in level_gdf.columns:
+                region_options = (level_gdf[name_col].astype(str) + ' ('
+                                  + level_gdf['NUTS_ID'].astype(str) + ')').tolist()
+            else:
+                region_options = level_gdf[name_col].astype(str).tolist()
 
             if region_options:
                 selected_idx = st.sidebar.selectbox(
