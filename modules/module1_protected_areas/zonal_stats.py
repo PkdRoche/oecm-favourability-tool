@@ -106,7 +106,7 @@ def zonal_stats_by_pa_class(
                     # Skip empty unions early
                     if getattr(union_geom, 'is_empty', False):
                         logger.warning(
-                            f"Empty geometry union for class {pa_class} ({criterion_name}); skipping"
+                            f"Empty geometry union for class {iucn_cat} ({criterion_name}); skipping"
                         )
                         continue
 
@@ -126,7 +126,7 @@ def zonal_stats_by_pa_class(
                         raster_bounds_geom = box(rb.left, rb.bottom, rb.right, rb.top)
                         if not union_geom.intersects(raster_bounds_geom):
                             logger.warning(
-                                f"No raster overlap for {criterion_name} in class {pa_class}. "
+                                f"No raster overlap for {criterion_name} in class {iucn_cat}. "
                                 f"Raster bounds={rb}, geom bounds={getattr(union_geom, 'bounds', None)}"
                             )
                             continue

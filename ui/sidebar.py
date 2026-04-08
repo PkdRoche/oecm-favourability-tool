@@ -322,10 +322,22 @@ def render_sidebar():
     st.sidebar.markdown("---")
 
     # ===================================================================
+    # AHP weight injection — read values derived in the AHP tab
+    # ===================================================================
+    ahp_weights = st.session_state.get('ahp_weights', {})
+    ahp_active  = st.session_state.get('ahp_source', False)
+    _src_badge  = " `[AHP]`" if ahp_active else " `[Manual]`"
+
+    # ===================================================================
     # Section 4: Inter-group weights (W_A, W_B, W_C)
     # ===================================================================
-    st.sidebar.header("4. Inter-Group Weights")
-    st.sidebar.caption("Relative importance of each functional group")
+    st.sidebar.header("4. Inter-Group Weights" + _src_badge)
+    st.sidebar.caption(
+        "Relative importance of each functional group. "
+        + ("Derived from AHP — go to **② Weight Calibration** to revise."
+           if ahp_active else
+           "Set manually or derive via **② Weight Calibration (AHP)**.")
+    )
 
     defaults_inter = config.get('inter_group_weights', {})
 
@@ -333,7 +345,7 @@ def render_sidebar():
         "W_A — Ecological integrity",
         min_value=0.0,
         max_value=1.0,
-        value=defaults_inter.get('W_A', 0.50),
+        value=float(ahp_weights.get('W_A', defaults_inter.get('W_A', 0.50))),
         step=0.05,
         help="Group A: ecosystem condition, regulating ES, low pressure"
     )
@@ -342,7 +354,7 @@ def render_sidebar():
         "W_B — Co-benefits / social compatibility",
         min_value=0.0,
         max_value=1.0,
-        value=defaults_inter.get('W_B', 0.15),
+        value=float(ahp_weights.get('W_B', defaults_inter.get('W_B', 0.15))),
         step=0.05,
         help="Group B: cultural ecosystem services"
     )
@@ -351,7 +363,7 @@ def render_sidebar():
         "W_C — Production / use function",
         min_value=0.0,
         max_value=1.0,
-        value=defaults_inter.get('W_C', 0.35),
+        value=float(ahp_weights.get('W_C', defaults_inter.get('W_C', 0.35))),
         step=0.05,
         help="Group C: provisioning ES, compatible land use"
     )
@@ -365,35 +377,27 @@ def render_sidebar():
         st.sidebar.error(f"Σ = {weight_sum:.3f} ≠ 1.0")
         st.sidebar.warning("Inter-group weights must sum to 1.0. Use the normalise button below.")
 
-    # Normalise button
-    if st.sidebar.button("Normalise inter-group weights"):
-        if weight_sum > 0:
-            W_A = W_A / weight_sum
-            W_B = W_B / weight_sum
-            W_C = W_C / weight_sum
-            st.sidebar.success("Weights normalised to sum = 1.0")
-            # Store normalised values in session state
-            st.session_state['W_A_normalised'] = W_A
-            st.session_state['W_B_normalised'] = W_B
-            st.session_state['W_C_normalised'] = W_C
-            st.rerun()
+    # Normalise button (manual mode only — AHP weights are already normalised)
+    if not ahp_active:
+        if st.sidebar.button("Normalise inter-group weights"):
+            if weight_sum > 0:
+                st.session_state['W_A_normalised'] = W_A / weight_sum
+                st.session_state['W_B_normalised'] = W_B / weight_sum
+                st.session_state['W_C_normalised'] = W_C / weight_sum
+                st.rerun()
 
     # Use normalised values if available
     if 'W_A_normalised' in st.session_state:
-        W_A = st.session_state['W_A_normalised']
-        W_B = st.session_state['W_B_normalised']
-        W_C = st.session_state['W_C_normalised']
-        # Clear after use
-        del st.session_state['W_A_normalised']
-        del st.session_state['W_B_normalised']
-        del st.session_state['W_C_normalised']
+        W_A = st.session_state.pop('W_A_normalised')
+        W_B = st.session_state.pop('W_B_normalised')
+        W_C = st.session_state.pop('W_C_normalised')
 
     st.sidebar.markdown("---")
 
     # ===================================================================
     # Section 5: Intra-group weights (expandable)
     # ===================================================================
-    with st.sidebar.expander("5. Intra-Group Weights (Advanced)"):
+    with st.sidebar.expander("5. Intra-Group Weights (Advanced)" + _src_badge):
         st.markdown("### Group A — Ecological integrity")
 
         defaults_a = config.get('group_a_weights', {})
@@ -402,7 +406,8 @@ def render_sidebar():
             "Ecosystem condition",
             min_value=0.0,
             max_value=1.0,
-            value=defaults_a.get('ecosystem_condition', 0.45),
+            value=float(ahp_weights.get('w_condition',
+                        defaults_a.get('ecosystem_condition', 0.45))),
             step=0.05,
             key='w_condition'
         )
@@ -411,7 +416,8 @@ def render_sidebar():
             "Regulating ES capacity",
             min_value=0.0,
             max_value=1.0,
-            value=defaults_a.get('regulating_es', 0.35),
+            value=float(ahp_weights.get('w_regulating_es',
+                        defaults_a.get('regulating_es', 0.35))),
             step=0.05,
             key='w_regulating_es'
         )
@@ -420,7 +426,8 @@ def render_sidebar():
             "Low anthropogenic pressure",
             min_value=0.0,
             max_value=1.0,
-            value=defaults_a.get('low_pressure', 0.20),
+            value=float(ahp_weights.get('w_pressure',
+                        defaults_a.get('low_pressure', 0.20))),
             step=0.05,
             key='w_pressure'
         )
@@ -432,25 +439,20 @@ def render_sidebar():
         else:
             st.error(f"Group A: Σ = {sum_a:.3f} ≠ 1.0")
 
-        if st.button("Normalise Group A weights"):
+        if not ahp_active and st.button("Normalise Group A weights"):
             if sum_a > 0:
-                w_condition = w_condition / sum_a
-                w_regulating_es = w_regulating_es / sum_a
-                w_pressure = w_pressure / sum_a
-                st.success("Group A weights normalised")
                 st.session_state['group_a_normalised'] = {
-                    'w_condition': w_condition,
-                    'w_regulating_es': w_regulating_es,
-                    'w_pressure': w_pressure
+                    'w_condition':     w_condition     / sum_a,
+                    'w_regulating_es': w_regulating_es / sum_a,
+                    'w_pressure':      w_pressure      / sum_a,
                 }
                 st.rerun()
 
-        # Use normalised values if available
         if 'group_a_normalised' in st.session_state:
-            w_condition = st.session_state['group_a_normalised']['w_condition']
-            w_regulating_es = st.session_state['group_a_normalised']['w_regulating_es']
-            w_pressure = st.session_state['group_a_normalised']['w_pressure']
-            del st.session_state['group_a_normalised']
+            _n = st.session_state.pop('group_a_normalised')
+            w_condition     = _n['w_condition']
+            w_regulating_es = _n['w_regulating_es']
+            w_pressure      = _n['w_pressure']
 
         st.markdown("---")
         st.markdown("### Group B — Co-benefits")
@@ -467,7 +469,8 @@ def render_sidebar():
             "Provisioning ES capacity",
             min_value=0.0,
             max_value=1.0,
-            value=defaults_c.get('provisioning_es', 0.60),
+            value=float(ahp_weights.get('w_provisioning_es',
+                        defaults_c.get('provisioning_es', 0.60))),
             step=0.05,
             key='w_provisioning_es'
         )
@@ -476,7 +479,8 @@ def render_sidebar():
             "Compatible land use",
             min_value=0.0,
             max_value=1.0,
-            value=defaults_c.get('compatible_landuse', 0.40),
+            value=float(ahp_weights.get('w_landuse_compatible',
+                        defaults_c.get('compatible_landuse', 0.40))),
             step=0.05,
             key='w_landuse_compatible'
         )
@@ -488,22 +492,18 @@ def render_sidebar():
         else:
             st.error(f"Group C: Σ = {sum_c:.3f} ≠ 1.0")
 
-        if st.button("Normalise Group C weights"):
+        if not ahp_active and st.button("Normalise Group C weights"):
             if sum_c > 0:
-                w_provisioning_es = w_provisioning_es / sum_c
-                w_landuse_compatible = w_landuse_compatible / sum_c
-                st.success("Group C weights normalised")
                 st.session_state['group_c_normalised'] = {
-                    'w_provisioning_es': w_provisioning_es,
-                    'w_landuse_compatible': w_landuse_compatible
+                    'w_provisioning_es':    w_provisioning_es    / sum_c,
+                    'w_landuse_compatible': w_landuse_compatible / sum_c,
                 }
                 st.rerun()
 
-        # Use normalised values if available
         if 'group_c_normalised' in st.session_state:
-            w_provisioning_es = st.session_state['group_c_normalised']['w_provisioning_es']
-            w_landuse_compatible = st.session_state['group_c_normalised']['w_landuse_compatible']
-            del st.session_state['group_c_normalised']
+            _n = st.session_state.pop('group_c_normalised')
+            w_provisioning_es    = _n['w_provisioning_es']
+            w_landuse_compatible = _n['w_landuse_compatible']
 
     st.sidebar.markdown("---")
 

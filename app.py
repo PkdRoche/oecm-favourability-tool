@@ -48,6 +48,7 @@ st.markdown(
 # ===================================================================
 from ui.sidebar import render_sidebar
 from ui import tab_data_upload
+from ui.tab_ahp import render_tab_ahp
 from ui.tab_module1 import render_tab_module1
 from ui.tab_module2 import render_tab_module2
 
@@ -116,17 +117,20 @@ logger.debug(f"Current parameters: {parameters}")
 # ===================================================================
 # Tabs: Data Upload, Module 1, and Module 2
 # ===================================================================
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "① Data Upload",
-    "② Protection Network Diagnostic",
-    "③ OECM Favourability Analysis"
+    "② Weight Calibration (AHP)",
+    "③ Protection Network Diagnostic",
+    "④ OECM Favourability Analysis"
 ])
 
 with tab1:
-    # Render data upload tab
     tab_data_upload.render()
 
 with tab2:
+    render_tab_ahp()
+
+with tab3:
     # Retrieve PA data from session state if available
     pa_gdf = st.session_state.get('pa_gdf', None)
     territory_geom = st.session_state.get('territory_geom', None)
@@ -139,7 +143,7 @@ with tab2:
         ecosystem_layer=ecosystem_layer
     )
 
-with tab3:
+with tab4:
     st.header("Module 2 — OECM Favourability Analysis")
 
     # Check if data has been uploaded
@@ -254,12 +258,15 @@ with tab3:
                 aligned_arrays  = st.session_state['_aligned_arrays']
                 reference_profile = st.session_state['_aligned_profile']
 
-                # Prepare weight structure
+                # Prepare weight structure — normalize inter-group weights to exactly
+                # 1.0 to avoid floating-point drift triggering the engine's atol=1e-6 check.
+                _wa, _wb, _wc = parameters['W_A'], parameters['W_B'], parameters['W_C']
+                _wsum = _wa + _wb + _wc
                 weights = {
                     'inter_group_weights': {
-                        'W_A': parameters['W_A'],
-                        'W_B': parameters['W_B'],
-                        'W_C': parameters['W_C']
+                        'W_A': _wa / _wsum,
+                        'W_B': _wb / _wsum,
+                        'W_C': _wc / _wsum,
                     },
                     'group_a_weights': {
                         'ecosystem_condition': parameters['w_condition'],
