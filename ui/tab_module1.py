@@ -680,7 +680,9 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                 status.info("Computing zonal statistics for all criteria...")
                 try:
                     # Compute zonal statistics
-                    zonal_df = zonal_stats_by_pa_class(pa_gdf, raster_paths)
+                    # Use the same IUCN column as the coverage table so categories match
+                    _iucn_col = 'IUCN_MAX' if 'IUCN_MAX' in pa_gdf.columns else 'IUCN_CAT'
+                    zonal_df = zonal_stats_by_pa_class(pa_gdf, raster_paths, iucn_col=_iucn_col)
 
                     if len(zonal_df) == 0:
                         st.warning("No zonal statistics computed (no valid overlaps)")

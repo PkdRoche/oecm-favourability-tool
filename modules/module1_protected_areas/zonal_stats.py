@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 def zonal_stats_by_pa_class(
     pa_gdf: gpd.GeoDataFrame,
     raster_paths: Dict[str, str],
-    nodata: Optional[float] = None
+    nodata: Optional[float] = None,
+    iucn_col: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Compute zonal statistics of MCE criterion rasters within protected areas,
@@ -30,13 +31,17 @@ def zonal_stats_by_pa_class(
     Parameters
     ----------
     pa_gdf : gpd.GeoDataFrame
-        Protected areas GeoDataFrame with 'IUCN_CAT' column. Must be in EPSG:3035.
+        Protected areas GeoDataFrame. Must be in EPSG:3035.
     raster_paths : dict
         Dictionary mapping criterion name (str) to GeoTIFF file path.
         Example: {"ecosystem_condition": "path/to/condition.tif"}
     nodata : float or None, optional
         Custom nodata value to use for all rasters. If None, uses the nodata
         value specified in each raster's metadata.
+    iucn_col : str or None, optional
+        Column name to use for IUCN category grouping.  When None the function
+        auto-selects: 'IUCN_MAX' if present (preferred — matches WDPA best
+        designation), else 'IUCN_CAT'.  Pass an explicit value to override.
 
     Returns
     -------
@@ -53,9 +58,17 @@ def zonal_stats_by_pa_class(
             f"Current CRS: {pa_gdf.crs}"
         )
 
-    # Verify IUCN_CAT column
-    if 'IUCN_CAT' not in pa_gdf.columns:
-        raise ValueError("PA GeoDataFrame must have 'IUCN_CAT' column")
+    # Resolve which IUCN column to use — same logic as coverage table
+    if iucn_col is None:
+        iucn_col = 'IUCN_MAX' if 'IUCN_MAX' in pa_gdf.columns else 'IUCN_CAT'
+
+    if iucn_col not in pa_gdf.columns:
+        raise ValueError(
+            f"Column '{iucn_col}' not found in PA GeoDataFrame. "
+            f"Available columns: {list(pa_gdf.columns)}"
+        )
+
+    logger.info(f"Grouping zonal stats by column: '{iucn_col}'")
 
     if len(pa_gdf) == 0:
         logger.warning("PA GeoDataFrame is empty, returning empty statistics")
@@ -84,7 +97,7 @@ def zonal_stats_by_pa_class(
                 nodata_value = nodata if nodata is not None else src.nodata
 
                 # Get IUCN categories
-                iucn_categories = pa_gdf['IUCN_CAT'].unique()
+                iucn_categories = pa_gdf[iucn_col].unique()
 
                 # Reproject entire PA GeoDataFrame once (not once per category)
                 if str(raster_crs).upper() != 'EPSG:3035':
@@ -98,7 +111,7 @@ def zonal_stats_by_pa_class(
 
                 # Process each IUCN category
                 for iucn_cat in iucn_categories:
-                    class_gdf = pa_gdf_masked[pa_gdf_masked['IUCN_CAT'] == iucn_cat]
+                    class_gdf = pa_gdf_masked[pa_gdf_masked[iucn_col] == iucn_cat]
 
                     # Union all geometries for this class to avoid overlap
                     union_geom = unary_union(class_gdf.geometry)
