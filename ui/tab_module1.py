@@ -871,6 +871,88 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
     # ===================================================================
     st.subheader("Export & Analysis Tools")
 
+    # ── Report generation ────────────────────────────────────────────────
+    st.markdown("#### Diagnostic Report")
+    st.caption(
+        "Generate a fully documented report (DOCX) containing all maps, "
+        "charts and tables computed above.  Requires **python-docx** "
+        "(`pip install python-docx`)."
+    )
+
+    report_col1, report_col2, _ = st.columns([1, 1, 2])
+    with report_col1:
+        if st.button("Generate DOCX Report", type="primary", use_container_width=True):
+            with st.spinner("Building report…"):
+                try:
+                    from modules.module1_protected_areas.report_generator import (
+                        generate_docx_report
+                    )
+                    from modules.module1_protected_areas.coverage_stats import (
+                        coverage_by_class, kmgbf_indicator
+                    )
+
+                    # Re-compute tables needed for the report
+                    _cov_df   = coverage_by_class(pa_gdf, territory_area_ha)
+                    _kmgbf    = kmgbf_indicator(pa_gdf, territory_area_ha)
+                    _net_area = compute_net_area(pa_gdf, territory_geom)
+
+                    # IUCN category coverage table
+                    iucn_col_r = 'IUCN_MAX' if 'IUCN_MAX' in pa_gdf.columns else 'IUCN_CAT'
+                    _iucn_rows = []
+                    if iucn_col_r in pa_gdf.columns:
+                        for cat, grp in pa_gdf.groupby(iucn_col_r):
+                            net = grp.geometry.union_all().area / 10000.0
+                            _iucn_rows.append({
+                                'IUCN Category': cat,
+                                'Area (ha)': f'{net:,.0f}',
+                                '% Territory': f'{net / territory_area_ha * 100:.2f}%',
+                                'Sites': len(grp),
+                            })
+                    _iucn_df = pd.DataFrame(_iucn_rows) if _iucn_rows else None
+
+                    docx_bytes = generate_docx_report(
+                        territory_name=st.session_state.get('parameters', {}).get(
+                            'study_area_name', 'Unknown territory'),
+                        territory_area_ha=territory_area_ha,
+                        pa_gdf=pa_gdf,
+                        territory_geom=territory_geom,
+                        iucn_classes=iucn_classes,
+                        coverage_df=_cov_df,
+                        iucn_coverage_df=_iucn_df,
+                        gap_layers=st.session_state.get('gap_layers'),
+                        gap_stats=st.session_state.get('gap_stats'),
+                        ri_df=st.session_state.get('ri_df'),
+                        zonal_df=st.session_state.get('zonal_stats'),
+                        kmgbf_pct=_kmgbf,
+                        net_area_ha=_net_area,
+                    )
+                    st.session_state['_module1_report_bytes'] = docx_bytes
+                    st.success("Report ready — click Download below.")
+
+                except ImportError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Report generation failed: {e}")
+                    logger.exception("Module 1 report generation error")
+
+    with report_col2:
+        report_bytes = st.session_state.get('_module1_report_bytes')
+        territory_slug = (
+            st.session_state.get('parameters', {})
+            .get('study_area_name', 'territory')
+            .replace(' ', '_')[:30]
+        )
+        st.download_button(
+            label="Download DOCX",
+            data=report_bytes or b'',
+            file_name=f"module1_diagnostic_{territory_slug}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            disabled=report_bytes is None,
+            use_container_width=True,
+        )
+
+    st.markdown("---")
+
     col_exp1, col_exp2 = st.columns(2)
 
     with col_exp1:
