@@ -390,6 +390,7 @@ with tab4:
                     st.session_state['eliminatory_mask']   = results['eliminatory_mask']
                     st.session_state['raster_profile']     = reference_profile
                     st.session_state['normalised_arrays']  = results.get('normalised_arrays', {})
+                    st.session_state['group_scores']       = results.get('group_scores', {})
 
                     render_tab_module2(
                         score_array=results['score'],

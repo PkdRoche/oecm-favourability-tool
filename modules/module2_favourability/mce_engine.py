@@ -678,12 +678,20 @@ def compute_favourability(
                 f"(max_bonus={proximity_bonus:.2f}, decay={proximity_decay_km:.0f} km)"
             )
 
-    # Return results — normalised_arrays included for sensitivity analysis
+    # Return results.
+    # group_scores are used by sensitivity analysis so it re-runs only the
+    # inter-group (and optionally intra-group) aggregation — not the full
+    # normalization pipeline — guaranteeing consistency with the main MCE.
     return {
-        'score':            final_score,
-        'oecm_mask':        oecm_mask & eliminatory_mask,
+        'score':             final_score,
+        'oecm_mask':         oecm_mask & eliminatory_mask,
         'classical_pa_mask': classical_pa_mask & eliminatory_mask,
-        'eliminatory_mask': eliminatory_mask,
+        'eliminatory_mask':  eliminatory_mask,
+        'group_scores': {
+            'A': group_a_score,
+            'B': group_b_score,
+            'C': group_c_score,
+        },
         'normalised_arrays': {
             'ecosystem_condition': eco_score,
             'regulating_es':       reg_score,

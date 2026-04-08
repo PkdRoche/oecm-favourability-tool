@@ -555,9 +555,10 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
         )
 
         normalised_arrays = st.session_state.get('normalised_arrays', {})
+        group_scores_sens = st.session_state.get('group_scores', {})
         eliminatory_mask  = st.session_state.get('eliminatory_mask')
 
-        if not normalised_arrays or eliminatory_mask is None:
+        if not group_scores_sens or eliminatory_mask is None:
             st.info("Run the MCE analysis first (tab ④) to enable sensitivity analysis.")
         else:
             # ── Correlation heatmap ─────────────────────────────────────
@@ -629,38 +630,50 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
                 type="primary",
                 key="run_sensitivity_btn"
             ):
-                with st.spinner(f"Running {_n_runs} Monte Carlo iterations…"):
-                    try:
-                        from modules.module2_favourability.sensitivity import run_sensitivity
-                        _weights = {
-                            'inter_group_weights': {
-                                'W_A': params['W_A'], 'W_B': params['W_B'],
-                                'W_C': params['W_C']
-                            },
-                            'group_a_weights': {
-                                'ecosystem_condition': params['w_condition'],
-                                'regulating_es':       params['w_regulating_es'],
-                                'low_pressure':        params['w_pressure'],
-                            },
-                            'group_c_weights': {
-                                'provisioning_es':    params['w_provisioning_es'],
-                                'compatible_landuse': params['w_landuse_compatible'],
-                            },
-                        }
-                        _stab, _std = run_sensitivity(
-                            normalised_arrays=normalised_arrays,
-                            base_weights=_weights,
-                            eliminatory_mask=eliminatory_mask,
-                            threshold=_map_threshold,
-                            n_runs=_n_runs,
-                            concentration=float(_conc),
-                            perturb_intra=_perturb_intra,
-                        )
-                        st.session_state['sensitivity_stability'] = _stab
-                        st.session_state['sensitivity_std']       = _std
-                        st.success("Sensitivity analysis complete.")
-                    except Exception as _e:
-                        st.error(f"Sensitivity analysis failed: {_e}")
+                try:
+                    from modules.module2_favourability.sensitivity import run_sensitivity
+                    _weights = {
+                        'inter_group_weights': {
+                            'W_A': params['W_A'], 'W_B': params['W_B'],
+                            'W_C': params['W_C']
+                        },
+                        'group_a_weights': {
+                            'ecosystem_condition': params['w_condition'],
+                            'regulating_es':       params['w_regulating_es'],
+                            'low_pressure':        params['w_pressure'],
+                        },
+                        'group_c_weights': {
+                            'provisioning_es':    params['w_provisioning_es'],
+                            'compatible_landuse': params['w_landuse_compatible'],
+                        },
+                    }
+
+                    # Progress bar + counter
+                    _prog_bar   = st.progress(0, text=f"Starting {_n_runs} Monte Carlo runs…")
+                    _prog_text  = st.empty()
+
+                    def _on_progress(current: int, total: int) -> None:
+                        pct = current / total
+                        _prog_bar.progress(pct, text=f"Run {current} / {total}")
+                        _prog_text.caption(f"Monte Carlo iteration {current} of {total} — {pct*100:.0f}% complete")
+
+                    _stab, _std = run_sensitivity(
+                        group_scores=group_scores_sens,
+                        base_weights=_weights,
+                        eliminatory_mask=eliminatory_mask,
+                        threshold=_map_threshold,
+                        n_runs=_n_runs,
+                        concentration=float(_conc),
+                        perturb_intra=_perturb_intra,
+                        progress_callback=_on_progress,
+                    )
+                    _prog_bar.empty()
+                    _prog_text.empty()
+                    st.session_state['sensitivity_stability'] = _stab
+                    st.session_state['sensitivity_std']       = _std
+                    st.success(f"Sensitivity analysis complete — {_n_runs} runs finished.")
+                except Exception as _e:
+                    st.error(f"Sensitivity analysis failed: {_e}")
 
             if 'sensitivity_stability' in st.session_state:
                 _stab = st.session_state['sensitivity_stability']
