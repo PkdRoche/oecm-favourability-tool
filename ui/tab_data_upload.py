@@ -270,59 +270,76 @@ def render():
             help="Load a previously saved .ini project file to restore all layer paths."
         )
         if ini_file is not None:
-            # Write to temp so configparser can read it
-            ini_content = ini_file.read().decode('utf-8')
-            tmp_ini = Path(tempfile.gettempdir()) / 'oecm_project_load.ini'
-            tmp_ini.write_text(ini_content)
+            # Deduplicate: only process if this is a different .ini than last time.
+            # Using getvalue() (not read()) so the content is always available even
+            # when Streamlit reruns with the same uploaded file still in the widget.
+            _ini_sig = f"{ini_file.name}:{ini_file.size}"
+            if st.session_state.get('_loaded_ini_sig') != _ini_sig:
+                # Write to temp so configparser can read it
+                ini_content = ini_file.getvalue().decode('utf-8')
+                tmp_ini = Path(tempfile.gettempdir()) / 'oecm_project_load.ini'
+                tmp_ini.write_text(ini_content)
 
-            project = _load_project_ini(str(tmp_ini))
+                project = _load_project_ini(str(tmp_ini))
 
-            # Apply loaded paths to session state
-            if 'criterion_raster_paths' not in st.session_state:
-                st.session_state['criterion_raster_paths'] = {}
-            if 'validation_reports' not in st.session_state:
-                st.session_state['validation_reports'] = {}
-            if '_original_raster_paths' not in st.session_state:
-                st.session_state['_original_raster_paths'] = {}
+                # Apply loaded paths to session state
+                if 'criterion_raster_paths' not in st.session_state:
+                    st.session_state['criterion_raster_paths'] = {}
+                if 'validation_reports' not in st.session_state:
+                    st.session_state['validation_reports'] = {}
+                if '_original_raster_paths' not in st.session_state:
+                    st.session_state['_original_raster_paths'] = {}
 
-            # NUTS
-            if project.get('nuts_path'):
-                st.session_state['nuts_file'] = project['nuts_path']
-                st.session_state['nuts_direct_path'] = project['nuts_path']
-                st.session_state.pop('nuts_gdf_cache', None)
+                # NUTS — set widget key so the text input renders with the path
+                if project.get('nuts_path'):
+                    st.session_state['nuts_file'] = project['nuts_path']
+                    st.session_state['nuts_direct_path'] = project['nuts_path']
+                    st.session_state.pop('nuts_gdf_cache', None)
 
-            # WDPA — also set the widget key so the text input renders correctly
-            if project['wdpa_path']:
-                st.session_state['wdpa_file'] = project['wdpa_path']
-                st.session_state['_original_wdpa_path'] = project['wdpa_path']
-                st.session_state['wdpa_direct_path'] = project['wdpa_path']
+                # WDPA — set widget key so the text input renders with the path
+                if project['wdpa_path']:
+                    st.session_state['wdpa_file'] = project['wdpa_path']
+                    st.session_state['_original_wdpa_path'] = project['wdpa_path']
+                    st.session_state['wdpa_direct_path'] = project['wdpa_path']
 
-            # Rasters — set widget keys so text inputs don't clear paths on re-render
-            for key, path in project['raster_paths'].items():
-                st.session_state['criterion_raster_paths'][key] = path
-                st.session_state['_original_raster_paths'][key] = path
-                st.session_state[f'{key}_direct_path'] = path
-                _validate_layer(key, path)
+                # Rasters — set widget keys so text inputs don't clear paths
+                for key, path in project['raster_paths'].items():
+                    st.session_state['criterion_raster_paths'][key] = path
+                    st.session_state['_original_raster_paths'][key] = path
+                    st.session_state[f'{key}_direct_path'] = path
+                    _validate_layer(key, path)
 
-            # Settings
-            if project['settings'].get('exclude_marine_pa'):
-                st.session_state['exclude_marine_pa'] = (
-                    project['settings']['exclude_marine_pa'].lower() == 'true'
+                # Settings
+                if project['settings'].get('exclude_marine_pa'):
+                    st.session_state['exclude_marine_pa'] = (
+                        project['settings']['exclude_marine_pa'].lower() == 'true'
+                    )
+
+                # Mark this .ini as processed so we don't re-run on every rerender
+                st.session_state['_loaded_ini_sig'] = _ini_sig
+
+                # Report
+                n_loaded = len(project['raster_paths'])
+                wdpa_ok = project['wdpa_path'] is not None
+                st.success(
+                    f"Project loaded: {n_loaded} raster(s)"
+                    f"{', WDPA' if wdpa_ok else ''}"
                 )
+                if project['errors']:
+                    for err in project['errors']:
+                        st.warning(f"Missing: {err}")
 
-            # Report
-            n_loaded = len(project['raster_paths'])
-            wdpa_ok = project['wdpa_path'] is not None
-            st.success(
-                f"Project loaded: {n_loaded} raster(s)"
-                f"{', WDPA' if wdpa_ok else ''}"
-            )
-            if project['errors']:
-                for err in project['errors']:
-                    st.warning(f"Missing: {err}")
-
-            # Rerun so all text-input widgets pick up the new session-state keys
-            st.rerun()
+                # One rerun to let widgets pick up the new session-state values.
+                # The deduplication flag above prevents this from looping.
+                st.rerun()
+            else:
+                # Already processed — just show confirmation
+                n_loaded = len(st.session_state.get('criterion_raster_paths', {}))
+                wdpa_ok  = st.session_state.get('wdpa_file') is not None
+                st.success(
+                    f"Project active: {n_loaded} raster(s)"
+                    f"{', WDPA' if wdpa_ok else ''}"
+                )
 
     with col_save:
         save_path = st.text_input(
