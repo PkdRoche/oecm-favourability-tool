@@ -200,6 +200,7 @@ def generate_docx_report(
     zonal_df: Optional[pd.DataFrame],
     kmgbf_pct: float,
     net_area_ha: float,
+    strict_pct: Optional[float] = None,
 ) -> bytes:
     """
     Generate a DOCX diagnostic report for Module 1.
@@ -283,15 +284,20 @@ def generate_docx_report(
 
     # Executive summary box
     _heading('Executive Summary', level=1)
-    _kv_table([
+    kv_rows = [
         ('Territory',                  territory_name),
         ('Territory area',             f'{territory_area_ha:,.0f} ha'),
         ('Net protected area',         f'{net_area_ha:,.0f} ha'),
-        ('% territory protected',      f'{kmgbf_pct:.1f}%'),
-        ('KMGBF 30% target status',    '✓ Met' if kmgbf_pct >= 30 else '✗ Not yet met'),
-        ('Number of PA sites',         f'{len(pa_gdf):,}'),
-        ('Report generated',           datetime.now().strftime('%Y-%m-%d %H:%M')),
-    ])
+        ('% protected — IUCN I–VI + OECMs (KMGBF T3)', f'{kmgbf_pct:.1f}%'),
+        ('KMGBF Target 3 (30% by 2030)', '✓ Met' if kmgbf_pct >= 30 else '✗ Not yet met'),
+    ]
+    if strict_pct is not None:
+        kv_rows.append(('  of which strict core only (IUCN I–II)', f'{strict_pct:.1f}%'))
+    kv_rows += [
+        ('Number of PA sites',  f'{len(pa_gdf):,}'),
+        ('Report generated',    datetime.now().strftime('%Y-%m-%d %H:%M')),
+    ]
+    _kv_table(kv_rows)
     doc.add_paragraph()
 
     # -----------------------------------------------------------------------

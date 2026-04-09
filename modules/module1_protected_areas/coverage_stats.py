@@ -251,13 +251,18 @@ def fragmentation_index(
 
 def kmgbf_indicator(
     gdf: gpd.GeoDataFrame,
-    territory_area_ha: float
+    territory_area_ha: float,
+    classes: list | None = None,
 ) -> float:
     """
-    Compute KMGBF Target 3 indicator: percentage under strict protection.
+    Compute KMGBF Target 3 indicator: percentage of territory under effective
+    area-based conservation.
 
-    Strict protection defined as IUCN categories Ia, Ib, II (strict_core class).
-    Uses net deduplicated area.
+    Per CBD COP15 decision 15/4 (Kunming-Montreal GBF), Target 3 counts:
+      - All IUCN categories I–VI  (strict_core + regulatory + contractual)
+      - Recorded OECMs            (oecm)
+    Areas with unassigned/not-reported IUCN status are excluded by default
+    because their legal effectiveness cannot be verified.
 
     Parameters
     ----------
@@ -266,63 +271,54 @@ def kmgbf_indicator(
         Must be in EPSG:3035.
     territory_area_ha : float
         Total territory area in hectares.
+    classes : list of str, optional
+        Protection classes to include. Default: all IUCN I–VI + OECMs
+        ['strict_core', 'regulatory', 'contractual', 'oecm'].
+        Pass ['strict_core'] for the old strict-only sub-indicator.
 
     Returns
     -------
     float
-        Percentage of territory under strict protection (0-100).
-
-    Raises
-    ------
-    ValueError
-        If GeoDataFrame is not in EPSG:3035 or missing protection_class column.
+        Percentage of territory under effective protection (0–100).
 
     Notes
     -----
-    KMGBF Target 3: 30% of land and seas under effective protection by 2030.
-    This indicator measures progress towards the 30% target for strict
-    protection categories (IUCN I-II).
-
-    Reference: Kunming-Montreal Global Biodiversity Framework, CBD COP15.
+    Reference: CBD COP15 decision 15/4, Target 3 operative paragraph 2:
+    "at least 30 per cent of terrestrial and inland water areas … are
+    effectively conserved and managed through … protected areas and other
+    effective area-based conservation measures".
+    All IUCN categories I–VI and recorded OECMs qualify.  Unassigned areas
+    (IUCN 'Not Reported' / 'Not Applicable') are excluded.
 
     Examples
     --------
-    >>> kmgbf_pct = kmgbf_indicator(gdf_proj, territory_area_ha=50000)
-    >>> print(f"Strict protection coverage: {kmgbf_pct:.2f}%")
-    >>> if kmgbf_pct >= 30.0:
-    ...     print("Target achieved!")
+    >>> full_pct   = kmgbf_indicator(gdf_proj, territory_area_ha=50000)
+    >>> strict_pct = kmgbf_indicator(gdf_proj, territory_area_ha=50000,
+    ...                              classes=['strict_core'])
     """
-    # Verify CRS
     if gdf.crs != 'EPSG:3035':
         raise ValueError(
             f"GeoDataFrame must be in EPSG:3035. Current CRS: {gdf.crs}"
         )
-
-    # Verify protection_class column
     if 'protection_class' not in gdf.columns:
         raise ValueError("GeoDataFrame must have 'protection_class' column")
-
     if len(gdf) == 0 or territory_area_ha == 0:
         return 0.0
 
-    # Filter to strict protection categories
-    strict_classes = ['strict_core']  # IUCN Ia, Ib, II
-    strict_gdf = gdf[gdf['protection_class'].isin(strict_classes)]
+    # Default: all classes that qualify under KMGBF Target 3
+    if classes is None:
+        classes = ['strict_core', 'regulatory', 'contractual', 'oecm']
 
-    if len(strict_gdf) == 0:
-        logger.warning("No strict protection areas found")
+    filtered = gdf[gdf['protection_class'].isin(classes)]
+    if len(filtered) == 0:
+        logger.warning("No qualifying protection areas found for KMGBF indicator")
         return 0.0
 
-    # Compute net area
-    strict_union = unary_union(strict_gdf.geometry)
-    strict_area_ha = strict_union.area / 10000.0
-
-    # Percentage
-    pct = (strict_area_ha / territory_area_ha) * 100.0
+    area_ha = unary_union(filtered.geometry).area / 10_000.0
+    pct = (area_ha / territory_area_ha) * 100.0
 
     logger.info(
-        f"KMGBF Target 3 indicator: {pct:.2f}% strict protection "
-        f"({strict_area_ha:.2f} ha / {territory_area_ha:.2f} ha)"
+        "KMGBF Target 3 indicator: %.2f%% (%.0f ha / %.0f ha) — classes: %s",
+        pct, area_ha, territory_area_ha, classes
     )
-
     return pct

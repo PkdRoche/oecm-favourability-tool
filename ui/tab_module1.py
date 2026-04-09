@@ -141,41 +141,55 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
 
     col1, col2, col3, col4 = st.columns(4)
 
-    # Metric 1: Net protected area
+    # Metric 1: Net protected area (all classes, deduplicated)
     net_area = compute_net_area(pa_gdf, territory_geom)
 
     with col1:
         st.metric(
             label="Net Protected Area",
             value=f"{net_area:,.0f} ha",
-            help="Deduplicated area via geometric union (excludes overlaps)"
+            help="Deduplicated area via geometric union (excludes overlaps) — all PA classes"
         )
 
-    # Metric 2: % territory (KMGBF indicator)
-    kmgbf_pct = kmgbf_indicator(pa_gdf, territory_area_ha)
+    # Metric 2: Full KMGBF Target 3 indicator (IUCN I–VI + OECMs)
+    # Per CBD COP15 decision 15/4: all IUCN categories I–VI and OECMs count.
+    kmgbf_pct = kmgbf_indicator(pa_gdf, territory_area_ha)          # I–VI + OECM
+    strict_pct = kmgbf_indicator(pa_gdf, territory_area_ha,
+                                 classes=['strict_core'])             # I–II only
     target_30 = 30.0
 
     with col2:
         delta = kmgbf_pct - target_30
         st.metric(
-            label="% Territory Protected",
+            label="KMGBF T3 — All IUCN I–VI + OECMs",
             value=f"{kmgbf_pct:.1f}%",
-            delta=f"{delta:.1f}% vs 30% target",
-            help="KMGBF Target 3: 30% strict protection (IUCN I-II) by 2030"
+            delta=f"{delta:+.1f}% vs 30% target",
+            help=(
+                "KMGBF Target 3 (CBD COP15 decision 15/4): percentage of territory "
+                "covered by PAs or OECMs of any IUCN category (I–VI) or recorded OECM. "
+                "Unassigned areas (no confirmed IUCN category) are excluded. "
+                "30% by 2030 is the global commitment."
+            )
         )
-
-    # Metric 3: Number of PA sites
-    n_sites = len(pa_gdf)
 
     with col3:
         st.metric(
-            label="Number of PA Sites",
-            value=f"{n_sites:,}",
-            help="Total number of protected area polygons"
+            label="Strict protection only (IUCN I–II)",
+            value=f"{strict_pct:.1f}%",
+            delta=f"{strict_pct - target_30:+.1f}% vs 30%",
+            help=(
+                "Sub-indicator: area under the most restrictive management regimes "
+                "(IUCN Ia strict nature reserves, Ib wilderness areas, II national parks). "
+                "Many national frameworks and IPBES reports use this narrower metric alongside "
+                "the full KMGBF indicator."
+            )
         )
 
-    # Metric 4: Synthetic RI index (if ecosystem layer available)
+    # Metric 4: Number of PA sites + Synthetic RI
+    n_sites = len(pa_gdf)
+
     with col4:
+        st.caption(f"**{n_sites:,} PA sites** in the network")
         if ecosystem_layer is not None:
             # Compute representativity index
             try:
@@ -894,9 +908,11 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                     )
 
                     # Re-compute tables needed for the report
-                    _cov_df   = coverage_by_class(pa_gdf, territory_area_ha)
-                    _kmgbf    = kmgbf_indicator(pa_gdf, territory_area_ha)
-                    _net_area = compute_net_area(pa_gdf, territory_geom)
+                    _cov_df      = coverage_by_class(pa_gdf, territory_area_ha)
+                    _kmgbf       = kmgbf_indicator(pa_gdf, territory_area_ha)        # I–VI + OECM
+                    _strict_pct  = kmgbf_indicator(pa_gdf, territory_area_ha,
+                                                   classes=['strict_core'])          # I–II only
+                    _net_area    = compute_net_area(pa_gdf, territory_geom)
 
                     # IUCN category coverage table
                     iucn_col_r = 'IUCN_MAX' if 'IUCN_MAX' in pa_gdf.columns else 'IUCN_CAT'
@@ -927,6 +943,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                         zonal_df=st.session_state.get('zonal_stats'),
                         kmgbf_pct=_kmgbf,
                         net_area_ha=_net_area,
+                        strict_pct=_strict_pct,
                     )
                     st.session_state['_module1_report_bytes'] = docx_bytes
                     st.success("Report ready — click Download below.")
