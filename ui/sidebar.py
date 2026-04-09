@@ -670,12 +670,9 @@ def render_sidebar():
         help="Only pixels whose PA belongs to one of the selected classes are excluded.",
     )
 
-    show_pa_overlay = st.sidebar.checkbox(
-        "Show PA network overlay on favourability map",
-        value=st.session_state.get('show_pa_overlay', True),
-        key='show_pa_overlay',
-        help="Draws the PA polygon layer as a semi-transparent overlay on the score map.",
-    )
+    # PA overlay toggle lives inline in the map tab (avoids duplicate key conflict).
+    # Read the session state value set by the inline checkbox.
+    show_pa_overlay = st.session_state.get('show_pa_overlay', True)
 
     st.sidebar.markdown("---")
 
