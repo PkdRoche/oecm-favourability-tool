@@ -37,6 +37,64 @@ logger = logging.getLogger(__name__)
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _smooth_geometry(geom, pixel_size: float):
+    """Smooth a raster-derived polygon outline.
+
+    Two-pass approach:
+    1. Morphological closing — buffer outward by ~0.6 × pixel_size then inward
+       by the same amount.  This rounds concave staircase notches and fills
+       single-pixel indentations without eroding the overall shape.
+    2. Douglas-Peucker simplification — removes co-linear vertices that were
+       produced by the pixel grid, reducing vertex count by ~70-80 %.
+
+    Parameters
+    ----------
+    geom : shapely geometry
+    pixel_size : float
+        Pixel side length in the geometry's CRS units (metres for EPSG:3035).
+    """
+    if geom is None or geom.is_empty:
+        return geom
+    r   = pixel_size * 0.6          # slightly more than half-pixel
+    tol = pixel_size * 0.4          # simplification tolerance
+    try:
+        smoothed = (
+            geom
+            .buffer(r, resolution=2)   # resolution=2 keeps buffers fast
+            .buffer(-r, resolution=2)
+            .simplify(tol, preserve_topology=True)
+        )
+        return smoothed if not smoothed.is_empty else geom
+    except Exception:
+        return geom
+
+
+def _remove_holes(geom, min_hole_area_m2: float = 0.0):
+    """Remove interior rings (holes) from polygons.
+
+    Parameters
+    ----------
+    geom : shapely Polygon or MultiPolygon
+    min_hole_area_m2 : float
+        Only remove holes whose area is *below* this threshold.
+        0 (default) removes **all** holes.
+    """
+    from shapely.geometry import Polygon, MultiPolygon
+
+    def _fill(poly: Polygon) -> Polygon:
+        if min_hole_area_m2 <= 0:
+            return Polygon(poly.exterior)
+        kept = [r for r in poly.interiors if Polygon(r).area >= min_hole_area_m2]
+        return Polygon(poly.exterior, kept)
+
+    if isinstance(geom, Polygon):
+        return _fill(geom)
+    if isinstance(geom, MultiPolygon):
+        filled = [_fill(p) for p in geom.geoms]
+        return MultiPolygon([p for p in filled if not p.is_empty])
+    return geom
+
+
 def _polsby_popper(geom) -> float:
     """Polsby-Popper compactness index [0, 1]. 1 = perfect circle."""
     import math
@@ -80,6 +138,8 @@ def delineate_patches(
     mmu_ha: float = 100.0,
     pa_gdf: Optional[gpd.GeoDataFrame] = None,
     strict_gaps_gdf: Optional[gpd.GeoDataFrame] = None,
+    smooth: bool = True,
+    min_hole_area_ha: float = 1.0,
 ) -> gpd.GeoDataFrame:
     """
     Delineate candidate OECM sites from the MCE score raster.
@@ -101,6 +161,12 @@ def delineate_patches(
     strict_gaps_gdf : GeoDataFrame, optional
         Strict gap layer from Module 1 gap analysis (EPSG:3035). Used to
         compute gap overlap attribute.
+    smooth : bool, default True
+        Apply morphological closing + Douglas-Peucker simplification to
+        remove staircase pixel edges from the vectorised outlines.
+    min_hole_area_ha : float, default 1.0
+        Remove interior holes whose area is below this threshold (ha).
+        Set to 0 to remove *all* holes; set to a large value to keep them.
 
     Returns
     -------
@@ -110,9 +176,11 @@ def delineate_patches(
         dist_to_pa_km, gap_overlap_pct, rank_score, geometry (EPSG:3035)
         Sorted by rank_score descending.
     """
-    transform = profile['transform']
-    crs       = profile['crs']
+    transform     = profile['transform']
+    crs           = profile['crs']
+    pixel_size    = abs(transform[0])                            # metres (EPSG:3035)
     pixel_area_ha = abs(transform[0] * transform[4]) / 10000.0
+    min_hole_m2   = min_hole_area_ha * 10_000.0
 
     # ------------------------------------------------------------------
     # 1. Binary mask at threshold
@@ -206,6 +274,16 @@ def delineate_patches(
             continue
         patch_geom = unary_union(geoms)
         if patch_geom.is_empty:
+            continue
+
+        # --- Post-vectorisation geometry improvement ---
+        # Remove holes first (before smoothing, so small pixel-gaps don't
+        # get locked in by the buffer pass)
+        patch_geom = _remove_holes(patch_geom, min_hole_area_m2=min_hole_m2)
+        # Smooth staircase pixel edges
+        if smooth:
+            patch_geom = _smooth_geometry(patch_geom, pixel_size=pixel_size)
+        if patch_geom is None or patch_geom.is_empty:
             continue
 
         # --- Score statistics ---
