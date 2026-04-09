@@ -277,6 +277,41 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
                     ).add_to(m)
 
 
+            # ── Optional PA network overlay ──────────────────────────────
+            _show_pa_overlay = (params or {}).get('show_pa_overlay', True)
+            if _show_pa_overlay:
+                _pa_gdf_ov = st.session_state.get('pa_gdf')
+                if _pa_gdf_ov is not None and len(_pa_gdf_ov) > 0:
+                    try:
+                        import geopandas as _gpd_ov
+                        _pa_4326 = _pa_gdf_ov.to_crs('EPSG:4326')
+                        # Colour by protection_class
+                        _ov_colours = {
+                            'strict_core':  '#2E7D32',
+                            'regulatory':   '#66BB6A',
+                            'contractual':  '#A5D6A7',
+                            'unassigned':   '#B4B2A9',
+                        }
+                        def _pa_style(feat):
+                            pc = feat['properties'].get('protection_class', 'unassigned')
+                            c  = _ov_colours.get(pc, '#B4B2A9')
+                            return {'fillColor': c, 'color': c,
+                                    'weight': 0.8, 'fillOpacity': 0.45}
+                        _iucn_col_ov = 'IUCN_MAX' if 'IUCN_MAX' in _pa_4326.columns else 'IUCN_CAT'
+                        _tt_fields = [c for c in ['WDPA_NAME', 'protection_class', _iucn_col_ov]
+                                      if c in _pa_4326.columns]
+                        folium.GeoJson(
+                            _pa_4326,
+                            name='PA Network',
+                            style_function=_pa_style,
+                            tooltip=folium.GeoJsonTooltip(
+                                fields=_tt_fields,
+                                aliases=[f.replace('_', ' ').title() for f in _tt_fields],
+                            ) if _tt_fields else None,
+                        ).add_to(m)
+                    except Exception as _e_ov:
+                        pass  # PA overlay is optional — don't break the map
+
             # Add color legend (gradient bar with labels)
             legend_html = """
             <div style="position: fixed; bottom: 50px; left: 50px; width: 220px;
@@ -923,25 +958,32 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
     with col_exp1:
         if st.button("Export GeoTIFF"):
             try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp:
-                    export_module.export_geotiff(
-                        array=score_array,
-                        profile=profile,
-                        output_path=tmp.name
-                    )
+                # Create temp file, close it immediately so rasterio can open it on Windows
+                import tempfile as _tf
+                _tmp = _tf.NamedTemporaryFile(delete=False, suffix='.tif')
+                _tmp_path = _tmp.name
+                _tmp.close()
 
-                    # Read file for download
-                    with open(tmp.name, 'rb') as f:
-                        geotiff_bytes = f.read()
+                export_module.export_geotiff(
+                    array=score_array,
+                    profile=profile,
+                    output_path=_tmp_path
+                )
+                with open(_tmp_path, 'rb') as f:
+                    geotiff_bytes = f.read()
+                try:
+                    import os as _os
+                    _os.unlink(_tmp_path)
+                except Exception:
+                    pass
 
-                    st.download_button(
-                        label="Download GeoTIFF",
-                        data=geotiff_bytes,
-                        file_name="favourability_scores.tif",
-                        mime="image/tiff"
-                    )
-
-                    st.success("GeoTIFF ready for download!")
+                st.download_button(
+                    label="Download GeoTIFF",
+                    data=geotiff_bytes,
+                    file_name="favourability_scores.tif",
+                    mime="image/tiff"
+                )
+                st.success("GeoTIFF ready for download!")
 
             except Exception as e:
                 st.error(f"GeoTIFF export failed: {str(e)}")

@@ -291,15 +291,17 @@ def render():
                 st.session_state['nuts_direct_path'] = project['nuts_path']
                 st.session_state.pop('nuts_gdf_cache', None)
 
-            # WDPA
+            # WDPA — also set the widget key so the text input renders correctly
             if project['wdpa_path']:
                 st.session_state['wdpa_file'] = project['wdpa_path']
                 st.session_state['_original_wdpa_path'] = project['wdpa_path']
+                st.session_state['wdpa_direct_path'] = project['wdpa_path']
 
-            # Rasters — point directly to on-disk files (no temp copy needed)
+            # Rasters — set widget keys so text inputs don't clear paths on re-render
             for key, path in project['raster_paths'].items():
                 st.session_state['criterion_raster_paths'][key] = path
                 st.session_state['_original_raster_paths'][key] = path
+                st.session_state[f'{key}_direct_path'] = path
                 _validate_layer(key, path)
 
             # Settings
@@ -318,6 +320,9 @@ def render():
             if project['errors']:
                 for err in project['errors']:
                     st.warning(f"Missing: {err}")
+
+            # Rerun so all text-input widgets pick up the new session-state keys
+            st.rerun()
 
     with col_save:
         save_path = st.text_input(

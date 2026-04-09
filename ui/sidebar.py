@@ -635,6 +635,51 @@ def render_sidebar():
     st.sidebar.markdown("---")
 
     # ===================================================================
+    # Section 6e: PA Exclusion / Overlay
+    # ===================================================================
+    st.sidebar.header("6e. PA Exclusion from Favourability")
+    st.sidebar.caption(
+        "Exclude pixels already covered by existing PAs from the favourability "
+        "result (sets their score to NaN so they appear as excluded). "
+        "Useful to focus OECM search on areas **outside** the existing network."
+    )
+    exclude_pa_pixels = st.sidebar.checkbox(
+        "Exclude pixels within existing PAs",
+        value=st.session_state.get('exclude_pa_pixels', False),
+        key='exclude_pa_pixels',
+        help=(
+            "When ON, pixels that fall inside any PA polygon (after applying "
+            "the protection-class filter below) are masked out of the score map."
+        )
+    )
+
+    _all_pa_classes = ['strict_core', 'regulatory', 'contractual', 'unassigned']
+    _pa_class_labels = {
+        'strict_core':  'Strict core (IUCN I–II)',
+        'regulatory':   'Regulatory (IUCN III–VI)',
+        'contractual':  'Contractual (national)',
+        'unassigned':   'Unassigned / unknown',
+    }
+    exclude_pa_classes = st.sidebar.multiselect(
+        "PA classes to exclude",
+        options=_all_pa_classes,
+        default=st.session_state.get('exclude_pa_classes', ['strict_core', 'regulatory']),
+        format_func=lambda c: _pa_class_labels.get(c, c),
+        key='exclude_pa_classes',
+        disabled=not exclude_pa_pixels,
+        help="Only pixels whose PA belongs to one of the selected classes are excluded.",
+    )
+
+    show_pa_overlay = st.sidebar.checkbox(
+        "Show PA network overlay on favourability map",
+        value=st.session_state.get('show_pa_overlay', True),
+        key='show_pa_overlay',
+        help="Draws the PA polygon layer as a semi-transparent overlay on the score map.",
+    )
+
+    st.sidebar.markdown("---")
+
+    # ===================================================================
     # Section 7: Module 1 weight suggestions
     # ===================================================================
     st.sidebar.header("7. Module 1 Weight Suggestions")
@@ -722,4 +767,7 @@ def render_sidebar():
         'sensitivity_perturb_intra': st.session_state.get('sensitivity_perturb_intra', True),
         'mmu_ha': st.session_state.get('mmu_ha', 100),
         'gap_bonus': gap_bonus,
+        'exclude_pa_pixels': exclude_pa_pixels,
+        'exclude_pa_classes': exclude_pa_classes,
+        'show_pa_overlay': show_pa_overlay,
     }

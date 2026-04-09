@@ -384,19 +384,63 @@ with tab4:
                             pa_proximity_raster=pa_proximity_raster,
                         )
 
-                    st.session_state['score_array']        = results['score']
-                    st.session_state['oecm_mask']          = results['oecm_mask']
-                    st.session_state['classical_pa_mask']  = results['classical_pa_mask']
-                    st.session_state['eliminatory_mask']   = results['eliminatory_mask']
+                    score_out        = results['score'].copy()
+                    oecm_mask_out    = results['oecm_mask'].copy()
+                    classical_out    = results['classical_pa_mask'].copy()
+                    elim_mask_out    = results['eliminatory_mask'].copy()
+
+                    # ── Optional: mask out pixels inside existing PAs ────────
+                    if parameters.get('exclude_pa_pixels') and 'pa_gdf' in st.session_state:
+                        import numpy as np
+                        from rasterio.features import rasterize as _rasterize_pa
+                        _pa_gdf_ex  = st.session_state['pa_gdf']
+                        _ex_classes = parameters.get('exclude_pa_classes', [])
+                        if _ex_classes and 'protection_class' in _pa_gdf_ex.columns:
+                            _pa_sel = _pa_gdf_ex[
+                                _pa_gdf_ex['protection_class'].isin(_ex_classes)
+                            ]
+                        else:
+                            _pa_sel = _pa_gdf_ex
+                        if len(_pa_sel) > 0:
+                            try:
+                                _pa_repr = _pa_sel.to_crs(reference_profile['crs'])
+                                _geoms   = [
+                                    (g, 1) for g in _pa_repr.geometry
+                                    if g is not None and not g.is_empty
+                                ]
+                                if _geoms:
+                                    _pa_mask = _rasterize_pa(
+                                        shapes=_geoms,
+                                        out_shape=(reference_profile['height'],
+                                                   reference_profile['width']),
+                                        transform=reference_profile['transform'],
+                                        fill=0, dtype='uint8'
+                                    ).astype(bool)
+                                    score_out[_pa_mask]     = np.nan
+                                    oecm_mask_out[_pa_mask] = False
+                                    classical_out[_pa_mask] = False
+                                    elim_mask_out[_pa_mask] = False
+                                    logger.info(
+                                        "PA exclusion: masked %d pixels from %d %s",
+                                        int(_pa_mask.sum()), len(_pa_sel),
+                                        str(_ex_classes)
+                                    )
+                            except Exception as _e:
+                                logger.warning("PA exclusion rasterization failed: %s", _e)
+
+                    st.session_state['score_array']        = score_out
+                    st.session_state['oecm_mask']          = oecm_mask_out
+                    st.session_state['classical_pa_mask']  = classical_out
+                    st.session_state['eliminatory_mask']   = elim_mask_out
                     st.session_state['raster_profile']     = reference_profile
                     st.session_state['normalised_arrays']  = results.get('normalised_arrays', {})
                     st.session_state['group_scores']       = results.get('group_scores', {})
 
                     render_tab_module2(
-                        score_array=results['score'],
-                        oecm_mask=results['oecm_mask'],
-                        classical_pa_mask=results['classical_pa_mask'],
-                        eliminatory_mask=results['eliminatory_mask'],
+                        score_array=score_out,
+                        oecm_mask=oecm_mask_out,
+                        classical_pa_mask=classical_out,
+                        eliminatory_mask=elim_mask_out,
                         profile=reference_profile,
                         params=parameters
                     )
