@@ -145,21 +145,19 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
         # =================================================================
         st.subheader("Favourability Map")
 
-        # Threshold slider FIRST so the map reflects the current value immediately
-        threshold_col1, threshold_col2 = st.columns([2, 1])
-        with threshold_col1:
+        # ── Controls row ─────────────────────────────────────────────────
+        ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([3, 1, 2])
+        with ctrl_col1:
             map_threshold = st.slider(
                 "Display threshold — show areas ≥",
-                min_value=0.0,
-                max_value=1.0,
+                min_value=0.0, max_value=1.0,
                 value=st.session_state.get('export_threshold', 0.5),
-                step=0.05,
-                key='map_threshold_slider',
+                step=0.05, key='map_threshold_slider',
                 help="Only pixels with favourability score ≥ this value are shown on the map"
             )
             st.session_state['export_threshold'] = map_threshold
 
-        with threshold_col2:
+        with ctrl_col2:
             above_threshold = valid_mask & (score_array >= map_threshold)
             area_above_ha = np.sum(above_threshold) * pixel_area_ha
             pct_above = (area_above_ha / territory_area_ha * 100.0) if territory_area_ha > 0 else 0.0
@@ -168,6 +166,24 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
                 value=f"{area_above_ha:,.0f} ha",
                 delta=f"{pct_above:.1f}% of study area"
             )
+
+        with ctrl_col3:
+            # PA overlay toggle — inline so it's discoverable without hunting the sidebar
+            _pa_available = st.session_state.get('pa_gdf') is not None
+            show_pa_ov = st.checkbox(
+                "Show PA network on map",
+                value=st.session_state.get('show_pa_overlay', True),
+                key='show_pa_overlay',
+                disabled=not _pa_available,
+                help="Overlay the PA polygons (colour-coded by protection class). "
+                     "Run the PA Diagnostic first to enable this."
+            )
+            _excl_active = (params or {}).get('exclude_pa_pixels', False)
+            if _excl_active:
+                _excl_cls = (params or {}).get('exclude_pa_classes', [])
+                st.caption(f"PA exclusion ON — {', '.join(_excl_cls) or 'all classes'}")
+            else:
+                st.caption("PA exclusion OFF (sidebar › 6e to change)")
 
         # Create folium map with raster overlay
         if n_valid == 0:
@@ -236,81 +252,104 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
             img_pil.save(buffered, format="PNG")
             img_base64 = base64.b64encode(buffered.getvalue()).decode()
 
-            # Create folium map centered on bounds
+            # Create folium map — CartoDB Positron: clean light basemap,
+            # built-in to Folium, no API key, proper attribution in the corner
             center_lat = (south + north) / 2
             center_lon = (west + east) / 2
 
             m = folium.Map(
                 location=[center_lat, center_lon],
                 zoom_start=8,
-                tiles='https://tiles.stadiamaps.com/tiles/stamen_toner_lite/{z}/{x}/{y}.png',
-                attr='&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>, &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
+                tiles=None,          # no default tile — we add it named below
             )
+            folium.TileLayer(
+                'CartoDB positron',
+                name='Basemap',
+                control=True,
+            ).add_to(m)
 
             # Add raster overlay — bounds in [[south, west], [north, east]] order
             folium.raster_layers.ImageOverlay(
                 image=f"data:image/png;base64,{img_base64}",
                 bounds=[[south, west], [north, east]],
-                opacity=0.9,
-                name='Favourability Score'
+                opacity=0.85,
+                name='Favourability Score',
             ).add_to(m)
 
-            # Add NUTS2 boundary if available
+            # Study-area boundary
             study_area_geom = st.session_state.get('study_area_geometry')
             if study_area_geom is not None:
                 import geopandas as gpd
-                from shapely.ops import unary_union
-                # Collapse any GeometryCollection → MultiPolygon so folium can serialise it
                 clean_geom = _to_multipolygon(study_area_geom)
                 if clean_geom is not None and not clean_geom.is_empty:
-                    nuts_gdf = gpd.GeoDataFrame([{'geometry': clean_geom}], crs='EPSG:3035')
-                    nuts_gdf_4326 = nuts_gdf.to_crs('EPSG:4326')
+                    _sa_gdf = gpd.GeoDataFrame(
+                        [{'geometry': clean_geom}], crs='EPSG:3035'
+                    ).to_crs('EPSG:4326')
                     folium.GeoJson(
-                        nuts_gdf_4326,
+                        _sa_gdf,
                         name='Study Area',
                         style_function=lambda x: {
-                            'fillColor': 'none',
-                            'color': 'white',
-                            'weight': 2,
-                            'fillOpacity': 0
-                        }
+                            'fillColor': 'none', 'color': '#ffffff',
+                            'weight': 2, 'fillOpacity': 0,
+                        },
                     ).add_to(m)
 
-
-            # ── Optional PA network overlay ──────────────────────────────
-            _show_pa_overlay = (params or {}).get('show_pa_overlay', True)
-            if _show_pa_overlay:
+            # ── PA network overlay ───────────────────────────────────────
+            if show_pa_ov:
                 _pa_gdf_ov = st.session_state.get('pa_gdf')
                 if _pa_gdf_ov is not None and len(_pa_gdf_ov) > 0:
                     try:
-                        import geopandas as _gpd_ov
-                        _pa_4326 = _pa_gdf_ov.to_crs('EPSG:4326')
-                        # Colour by protection_class
+                        import geopandas as _gpd2
                         _ov_colours = {
-                            'strict_core':  '#2E7D32',
-                            'regulatory':   '#66BB6A',
-                            'contractual':  '#A5D6A7',
-                            'unassigned':   '#B4B2A9',
+                            'strict_core': '#1B5E20',
+                            'regulatory':  '#388E3C',
+                            'contractual': '#81C784',
+                            'unassigned':  '#9E9E9E',
                         }
-                        def _pa_style(feat):
-                            pc = feat['properties'].get('protection_class', 'unassigned')
-                            c  = _ov_colours.get(pc, '#B4B2A9')
-                            return {'fillColor': c, 'color': c,
-                                    'weight': 0.8, 'fillOpacity': 0.45}
-                        _iucn_col_ov = 'IUCN_MAX' if 'IUCN_MAX' in _pa_4326.columns else 'IUCN_CAT'
+                        _iucn_col_ov = ('IUCN_MAX' if 'IUCN_MAX' in _pa_gdf_ov.columns
+                                        else 'IUCN_CAT')
+                        # Keep only the columns needed for display to reduce payload
+                        _keep = [c for c in ['WDPA_NAME', 'protection_class', _iucn_col_ov, 'geometry']
+                                 if c in _pa_gdf_ov.columns]
+                        _pa_slim = _pa_gdf_ov[_keep].copy()
+
+                        # Simplify geometry in projected CRS (100 m tolerance), then reproject
+                        _pa_slim['geometry'] = (
+                            _pa_slim.geometry
+                            .simplify(100, preserve_topology=True)
+                            .to_crs('EPSG:4326')
+                            if hasattr(_pa_slim.geometry, 'simplify')
+                            else _pa_slim.to_crs('EPSG:4326').geometry
+                        )
+                        _pa_slim = _pa_slim.set_crs('EPSG:3035', allow_override=True)
+                        _pa_slim = _pa_slim.to_crs('EPSG:4326')
+
                         _tt_fields = [c for c in ['WDPA_NAME', 'protection_class', _iucn_col_ov]
-                                      if c in _pa_4326.columns]
+                                      if c in _pa_slim.columns]
+
+                        # Embed colour into each feature via style_function closure
+                        _colours_snap = dict(_ov_colours)   # capture for closure
+
                         folium.GeoJson(
-                            _pa_4326,
+                            _pa_slim,
                             name='PA Network',
-                            style_function=_pa_style,
+                            style_function=lambda feat, _c=_colours_snap: {
+                                'fillColor': _c.get(
+                                    feat['properties'].get('protection_class', ''),
+                                    '#9E9E9E'
+                                ),
+                                'color':       '#333333',
+                                'weight':      0.6,
+                                'fillOpacity': 0.50,
+                            },
                             tooltip=folium.GeoJsonTooltip(
                                 fields=_tt_fields,
-                                aliases=[f.replace('_', ' ').title() for f in _tt_fields],
+                                aliases=[f.replace('_', ' ').title()
+                                         for f in _tt_fields],
                             ) if _tt_fields else None,
                         ).add_to(m)
                     except Exception as _e_ov:
-                        pass  # PA overlay is optional — don't break the map
+                        st.caption(f"PA overlay unavailable: {_e_ov}")
 
             # Add color legend (gradient bar with labels)
             legend_html = """
@@ -754,9 +793,9 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
 
                     _m_s = folium.Map(
                         location=[_center_lat, _center_lon], zoom_start=8,
-                        tiles='https://tiles.stadiamaps.com/tiles/stamen_toner_lite/{z}/{x}/{y}.png',
-                        attr='Stadia / OpenStreetMap'
+                        tiles=None,
                     )
+                    folium.TileLayer('CartoDB positron', name='Basemap').add_to(_m_s)
                     folium.raster_layers.ImageOverlay(
                         image=f"data:image/png;base64,{_b64_s}",
                         bounds=[[_south, _west], [_north, _east]],
@@ -889,9 +928,9 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
                     _centroid   = _sites_4326.geometry.union_all().centroid
                     _m_sites    = folium.Map(
                         location=[_centroid.y, _centroid.x], zoom_start=9,
-                        tiles='https://tiles.stadiamaps.com/tiles/stamen_toner_lite/{z}/{x}/{y}.png',
-                        attr='Stadia / OpenStreetMap'
+                        tiles=None,
                     )
+                    folium.TileLayer('CartoDB positron', name='Basemap').add_to(_m_sites)
                     folium.GeoJson(
                         _sites_4326,
                         name='Candidate Sites',
