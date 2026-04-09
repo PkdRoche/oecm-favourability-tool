@@ -313,15 +313,15 @@ def render_tab_module2(score_array=None, oecm_mask=None, classical_pa_mask=None,
                                  if c in _pa_gdf_ov.columns]
                         _pa_slim = _pa_gdf_ov[_keep].copy()
 
-                        # Simplify geometry in projected CRS (100 m tolerance), then reproject
-                        _pa_slim['geometry'] = (
-                            _pa_slim.geometry
-                            .simplify(100, preserve_topology=True)
-                            .to_crs('EPSG:4326')
-                            if hasattr(_pa_slim.geometry, 'simplify')
-                            else _pa_slim.to_crs('EPSG:4326').geometry
+                        # 1. Simplify in projected CRS (100 m tolerance)
+                        _pa_slim['geometry'] = _pa_slim.geometry.simplify(
+                            100, preserve_topology=True
                         )
-                        _pa_slim = _pa_slim.set_crs('EPSG:3035', allow_override=True)
+                        # 2. Flatten any GeometryCollection → MultiPolygon so
+                        #    Folium/GeoJSON can serialise ("coordinates" key)
+                        _pa_slim['geometry'] = _pa_slim.geometry.apply(_to_multipolygon)
+                        _pa_slim = _pa_slim[_pa_slim.geometry.notna()].copy()
+                        # 3. Reproject to WGS-84 (once, from the projected source CRS)
                         _pa_slim = _pa_slim.to_crs('EPSG:4326')
 
                         _tt_fields = [c for c in ['WDPA_NAME', 'protection_class', _iucn_col_ov]
