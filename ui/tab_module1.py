@@ -383,14 +383,21 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
         )
 
         clc_path = st.session_state.get('criterion_raster_paths', {}).get('landuse')
+        _ri_cache_key = (clc_path, id(pa_gdf))
+        _cache_valid  = (st.session_state.get('_ri_cache_key') == _ri_cache_key
+                         and 'ri_df' in st.session_state)
 
         if clc_path:
-            # Auto-compute on first load or when PA layer / CLC path changes
-            _ri_cache_key = (clc_path, id(pa_gdf))
-            if (st.session_state.get('_ri_cache_key') != _ri_cache_key
-                    or 'ri_df' not in st.session_state):
+            _btn_label = "↻ Recompute" if _cache_valid else "Compute Ecosystem RI"
+            _compute   = st.button(
+                _btn_label,
+                key='btn_compute_ri',
+                help="Pixel-count representativity from the CLC raster. "
+                     "May take 10–30 s for large rasters.",
+            )
+            if _compute:
                 try:
-                    with st.spinner("Computing ecosystem representativity from CLC…"):
+                    with st.spinner("Computing ecosystem representativity from CLC… (may take ~30 s)"):
                         from modules.module1_protected_areas.representativity import (
                             representativity_from_clc_raster
                         )
@@ -399,13 +406,20 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                             pa_gdf=pa_gdf,
                             target_threshold=0.30,
                         )
-                    st.session_state['ri_df']        = ri_df
+                    st.session_state['ri_df']         = ri_df
                     st.session_state['_ri_cache_key'] = _ri_cache_key
+                    _cache_valid = True
                 except Exception as _e:
                     st.warning(f"Representativity computation failed: {_e}")
                     st.session_state.pop('ri_df', None)
+                    _cache_valid = False
+        else:
+            st.info(
+                "Load the **CLC land-use raster** in the ① Data Upload tab "
+                "to enable ecosystem representativity."
+            )
 
-        ri_df = st.session_state.get('ri_df')
+        ri_df = st.session_state.get('ri_df') if _cache_valid else None
 
         if ri_df is not None and len(ri_df) > 0:
             synthetic_ri = ri_df['RI'].mean()
@@ -460,13 +474,8 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                     'gap_ha':         st.column_config.TextColumn('Gap to 30% (ha)'),
                 }
             )
-        elif clc_path is None:
-            st.info(
-                "Load the **CLC land-use raster** in the ① Data Upload tab "
-                "to compute ecosystem representativity."
-            )
-        else:
-            st.warning("Representativity computation did not return results.")
+        elif clc_path and not _cache_valid:
+            st.caption("Click **Compute Ecosystem RI** above to run the analysis.")
 
     st.markdown("---")
 

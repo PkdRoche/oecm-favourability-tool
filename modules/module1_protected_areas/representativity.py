@@ -277,15 +277,16 @@ def representativity_from_clc_raster(
     h, w = clc_array.shape
 
     # ── Rasterize PA polygons onto the CLC grid ───────────────────────────────
+    # Dissolve to a single (Multi)Polygon before rasterizing — much faster than
+    # passing thousands of individual polygon shapes to rasterio.features.rasterize.
     if len(pa_gdf) > 0:
-        pa_repr = pa_gdf.to_crs(crs)
-        geoms   = [
-            (g, 1) for g in pa_repr.geometry
-            if g is not None and not g.is_empty
-        ]
-        if geoms:
+        pa_repr    = pa_gdf.to_crs(crs)
+        dissolved  = unary_union(
+            [g for g in pa_repr.geometry if g is not None and not g.is_empty]
+        )
+        if dissolved is not None and not dissolved.is_empty:
             pa_mask = _rasterize(
-                shapes=geoms,
+                shapes=[(dissolved, 1)],
                 out_shape=(h, w),
                 transform=transform,
                 fill=0,
