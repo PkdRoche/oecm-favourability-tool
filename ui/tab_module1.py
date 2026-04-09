@@ -117,8 +117,6 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
         kmgbf_indicator
     )
     from modules.module1_protected_areas.representativity import (
-        cross_with_ecosystem_types,
-        representativity_index,
         propose_group_a_weights
     )
     from modules.module1_protected_areas.gap_analysis import (
@@ -185,69 +183,15 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
             )
         )
 
-    # Metric 4: Number of PA sites + Synthetic RI
+    # Metric 4: Number of PA sites
     n_sites = len(pa_gdf)
 
     with col4:
-        st.caption(f"**{n_sites:,} PA sites** in the network")
-        if ecosystem_layer is not None:
-            # Compute representativity index
-            try:
-                # Load defaults from config
-                config_path = Path(__file__).parent.parent / "config" / "criteria_defaults.yaml"
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = yaml.safe_load(f)
-                target_threshold = config.get('representativity', {}).get('default_target', 0.30)
-
-                # Compute ecosystem totals
-                if ecosystem_layer.crs != 'EPSG:3035':
-                    ecosystem_layer = ecosystem_layer.to_crs('EPSG:3035')
-
-                ecosystem_layer['area_ha'] = ecosystem_layer.geometry.area / 10000.0
-                territory_totals = ecosystem_layer.groupby('ecosystem_type')['area_ha'].sum().to_dict()
-
-                # Cross analysis
-                coverage_df = cross_with_ecosystem_types(pa_gdf, ecosystem_layer)
-                ri_df = representativity_index(coverage_df, territory_totals, target_threshold)
-
-                synthetic_ri = ri_df['RI'].mean()
-
-                # Determine colour
-                if synthetic_ri >= 0.7:
-                    ri_colour = "#1D9E75"  # Green
-                    ri_label = "Good"
-                elif synthetic_ri >= 0.3:
-                    ri_colour = "#F6A623"  # Amber
-                    ri_label = "Fair"
-                else:
-                    ri_colour = "#D0021B"  # Red
-                    ri_label = "Poor"
-
-                st.metric(
-                    label="Synthetic RI",
-                    value=f"{synthetic_ri:.2f}",
-                    help=(
-                        f"Representativity Index: {ri_label}\n"
-                        "1.0 = all ecosystem types reach 30% target\n"
-                        "<1.0 = under-representation"
-                    )
-                )
-
-                # Store RI results in session state for later use
-                st.session_state['ri_df'] = ri_df
-
-            except Exception as e:
-                st.metric(
-                    label="Synthetic RI",
-                    value="N/A",
-                    help=f"Error computing RI: {str(e)}"
-                )
-        else:
-            st.metric(
-                label="Synthetic RI",
-                value="N/A",
-                help="Upload ecosystem layer to compute representativity index"
-            )
+        st.metric(
+            label="Number of PA Sites",
+            value=f"{n_sites:,}",
+            help="Total number of protected-area polygons in the network (before spatial deduplication)"
+        )
 
     st.markdown("---")
 
@@ -430,56 +374,99 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
             st.dataframe(pd.DataFrame(iucn_rows), hide_index=True, width='stretch')
 
     with col_right:
-        st.markdown("#### Ecosystem Representativity")
+        st.markdown("#### Ecosystem Representativity (CLC-based)")
+        st.caption(
+            "PA coverage per broad CLC ecosystem type — "
+            "Forests, Grasslands, Wetlands, Water bodies, "
+            "Semi-natural open land, Agricultural areas. "
+            "Requires the CLC land-use raster to be loaded in the Data Upload tab."
+        )
 
-        if 'ri_df' in st.session_state and st.session_state['ri_df'] is not None:
-            ri_df = st.session_state['ri_df']
+        clc_path = st.session_state.get('criterion_raster_paths', {}).get('landuse')
 
-            # Create horizontal bar chart
-            chart_data = ri_df[['ecosystem_type', 'coverage_pct']].copy()
-            chart_data = chart_data.sort_values('coverage_pct', ascending=True)
+        if clc_path:
+            # Auto-compute on first load or when PA layer / CLC path changes
+            _ri_cache_key = (clc_path, id(pa_gdf))
+            if (st.session_state.get('_ri_cache_key') != _ri_cache_key
+                    or 'ri_df' not in st.session_state):
+                try:
+                    with st.spinner("Computing ecosystem representativity from CLC…"):
+                        from modules.module1_protected_areas.representativity import (
+                            representativity_from_clc_raster
+                        )
+                        ri_df = representativity_from_clc_raster(
+                            clc_path=clc_path,
+                            pa_gdf=pa_gdf,
+                            target_threshold=0.30,
+                        )
+                    st.session_state['ri_df']        = ri_df
+                    st.session_state['_ri_cache_key'] = _ri_cache_key
+                except Exception as _e:
+                    st.warning(f"Representativity computation failed: {_e}")
+                    st.session_state.pop('ri_df', None)
 
-            # Define colour function
-            def get_bar_colour(pct):
-                return '#1D9E75' if pct >= 30.0 else '#F6A623'
+        ri_df = st.session_state.get('ri_df')
 
-            chart_data['colour'] = chart_data['coverage_pct'].apply(get_bar_colour)
-
-            # Display chart using Streamlit bar_chart (simple approach)
-            st.bar_chart(
-                chart_data.set_index('ecosystem_type')['coverage_pct'],
-                width='stretch'
+        if ri_df is not None and len(ri_df) > 0:
+            synthetic_ri = ri_df['RI'].mean()
+            _ri_label = "Good" if synthetic_ri >= 0.7 else ("Fair" if synthetic_ri >= 0.3 else "Poor")
+            st.metric(
+                "Synthetic RI",
+                f"{synthetic_ri:.2f}",
+                f"{_ri_label} — {(ri_df['RI'] >= 1.0).sum()}/{len(ri_df)} types at 30% target",
+                help=(
+                    "Mean Representativity Index across ecosystem types. "
+                    "RI = min(coverage / 30%, 1.0).  "
+                    "1.0 = all types meet the KMGBF 30% target, 0.0 = none protected."
+                )
             )
 
-            st.caption(
-                "Green bars: above 30% target | Amber bars: below 30% target\n\n"
-                "Vertical dashed line indicates KMGBF 30% threshold."
-            )
+            # Horizontal bar chart
+            import matplotlib.pyplot as _plt
+            _fig, _ax = _plt.subplots(figsize=(5, max(2.5, len(ri_df) * 0.55)))
+            _sorted = ri_df.sort_values('coverage_pct')
+            _colours = ['#1D9E75' if v >= 30.0 else '#F6A623'
+                        for v in _sorted['coverage_pct']]
+            _ax.barh(_sorted['ecosystem_type'], _sorted['coverage_pct'],
+                     color=_colours, alpha=0.85)
+            _ax.axvline(30, color='red', linewidth=1.2, linestyle='--',
+                        label='30% KMGBF target')
+            _ax.set_xlabel('PA coverage (%)')
+            _ax.set_xlim(0, max(100, _sorted['coverage_pct'].max() * 1.05))
+            _ax.legend(fontsize=8)
+            _fig.tight_layout()
+            st.pyplot(_fig, use_container_width=True)
+            _plt.close(_fig)
 
-            # Alternative: display as table if chart is not informative
-            st.markdown("**Coverage Details:**")
-            display_ri = ri_df[['ecosystem_type', 'coverage_pct', 'RI', 'gap_ha']].copy()
+            st.caption("Green = at or above 30% target | Amber = below target")
+
+            display_ri = ri_df[['ecosystem_type', 'total_ha', 'protected_ha',
+                                 'coverage_pct', 'RI', 'gap_ha']].copy()
+            display_ri['total_ha']     = display_ri['total_ha'].apply(lambda x: f"{x:,.0f}")
+            display_ri['protected_ha'] = display_ri['protected_ha'].apply(lambda x: f"{x:,.0f}")
             display_ri['coverage_pct'] = display_ri['coverage_pct'].apply(lambda x: f"{x:.1f}%")
-            display_ri['RI'] = display_ri['RI'].apply(lambda x: f"{x:.2f}")
-            display_ri['gap_ha'] = display_ri['gap_ha'].apply(lambda x: f"{x:,.0f}")
-
+            display_ri['RI']           = display_ri['RI'].apply(lambda x: f"{x:.3f}")
+            display_ri['gap_ha']       = display_ri['gap_ha'].apply(lambda x: f"{x:,.0f}")
             st.dataframe(
                 display_ri,
                 hide_index=True,
-                width='stretch',
+                use_container_width=True,
                 column_config={
                     'ecosystem_type': 'Ecosystem Type',
-                    'coverage_pct': 'Coverage',
-                    'RI': 'RI',
-                    'gap_ha': 'Gap (ha)'
+                    'total_ha':       st.column_config.TextColumn('Total (ha)'),
+                    'protected_ha':   st.column_config.TextColumn('Protected (ha)'),
+                    'coverage_pct':   st.column_config.TextColumn('Coverage'),
+                    'RI':             st.column_config.TextColumn('RI'),
+                    'gap_ha':         st.column_config.TextColumn('Gap to 30% (ha)'),
                 }
             )
-
-        else:
+        elif clc_path is None:
             st.info(
-                "Upload ecosystem type layer to compute and display "
-                "representativity statistics."
+                "Load the **CLC land-use raster** in the ① Data Upload tab "
+                "to compute ecosystem representativity."
             )
+        else:
+            st.warning("Representativity computation did not return results.")
 
     st.markdown("---")
 

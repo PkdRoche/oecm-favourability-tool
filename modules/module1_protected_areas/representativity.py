@@ -1,12 +1,27 @@
 """Ecosystem representativity assessment (KMGBF Target 3)."""
 
 import logging
-from typing import Dict
+from typing import Dict, Optional
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 from shapely.ops import unary_union
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# CLC → broad ecosystem-type groupings (for raster-based RI)
+# Artificial surfaces (1xx) are excluded — not conservation targets.
+# ---------------------------------------------------------------------------
+_CLC_ECOSYSTEM_GROUPS: dict[str, frozenset[int]] = {
+    'Forests':                frozenset({311, 312, 313}),
+    'Grasslands & heathland': frozenset({321, 322, 323, 324}),
+    'Wetlands':               frozenset({411, 412, 421, 422, 423}),
+    'Water bodies':           frozenset({511, 512, 521, 522, 523}),
+    'Semi-natural open land': frozenset({331, 332, 333, 334, 335}),
+    'Agricultural areas':     frozenset({211, 212, 213, 221, 222, 223,
+                                          231, 241, 242, 243, 244}),
+}
 
 
 def cross_with_ecosystem_types(
@@ -208,6 +223,118 @@ def representativity_index(
         f"Ecosystem types at target: {(df['RI'] >= 1.0).sum()} / {len(df)}"
     )
 
+    return df
+
+
+def representativity_from_clc_raster(
+    clc_path: str,
+    pa_gdf: gpd.GeoDataFrame,
+    target_threshold: float = 0.30,
+    ecosystem_groups: Optional[dict] = None,
+) -> pd.DataFrame:
+    """
+    Compute ecosystem representativity directly from the CLC raster.
+
+    Avoids expensive vector overlay by working entirely in raster space:
+    1. Load CLC raster (integer CLC codes 111–523).
+    2. Rasterize PA polygons onto the same grid.
+    3. For each ecosystem group, count total pixels and PA-covered pixels.
+    4. Convert pixel counts to hectares and compute RI.
+
+    Parameters
+    ----------
+    clc_path : str
+        Path to the CLC GeoTIFF (EPSG:3035, integer CLC codes).
+    pa_gdf : gpd.GeoDataFrame
+        Protected areas GeoDataFrame (any CRS — reprojected internally).
+    target_threshold : float
+        KMGBF protection target as a fraction (default 0.30 = 30%).
+    ecosystem_groups : dict, optional
+        Mapping of ecosystem-type label → set of CLC integer codes.
+        Defaults to the built-in ``_CLC_ECOSYSTEM_GROUPS`` (6 categories).
+
+    Returns
+    -------
+    pd.DataFrame
+        Same schema as ``representativity_index``:
+        ecosystem_type, total_ha, protected_ha, coverage_pct, RI, gap_ha.
+        Sorted by coverage_pct ascending (most under-represented first).
+    """
+    import rasterio
+    from rasterio.features import rasterize as _rasterize
+
+    groups = ecosystem_groups if ecosystem_groups is not None else _CLC_ECOSYSTEM_GROUPS
+
+    # ── Load CLC raster ───────────────────────────────────────────────────────
+    with rasterio.open(clc_path) as src:
+        clc_array = src.read(1)          # integer CLC codes
+        profile   = src.profile
+        transform = src.transform
+        nodata    = src.nodata or 0
+        crs       = src.crs
+
+    pixel_area_ha = abs(transform[0]) * abs(transform[4]) / 10_000.0
+    h, w = clc_array.shape
+
+    # ── Rasterize PA polygons onto the CLC grid ───────────────────────────────
+    if len(pa_gdf) > 0:
+        pa_repr = pa_gdf.to_crs(crs)
+        geoms   = [
+            (g, 1) for g in pa_repr.geometry
+            if g is not None and not g.is_empty
+        ]
+        if geoms:
+            pa_mask = _rasterize(
+                shapes=geoms,
+                out_shape=(h, w),
+                transform=transform,
+                fill=0,
+                dtype='uint8',
+            ).astype(bool)
+        else:
+            pa_mask = np.zeros((h, w), dtype=bool)
+    else:
+        pa_mask = np.zeros((h, w), dtype=bool)
+
+    # ── Pixel-count RI per ecosystem group ───────────────────────────────────
+    valid = (clc_array != nodata) & (clc_array != 0)
+    results = []
+
+    for eco_type, code_set in groups.items():
+        codes    = np.array(list(code_set), dtype=clc_array.dtype)
+        eco_mask = np.isin(clc_array, codes) & valid
+
+        total_px     = int(eco_mask.sum())
+        protected_px = int((eco_mask & pa_mask).sum())
+
+        total_ha     = total_px     * pixel_area_ha
+        protected_ha = protected_px * pixel_area_ha
+
+        if total_ha == 0:
+            continue                         # ecosystem type absent from territory
+
+        coverage_pct = protected_ha / total_ha * 100.0
+        ri           = min(coverage_pct / (target_threshold * 100.0), 1.0)
+        gap_ha       = max(0.0, total_ha * target_threshold - protected_ha)
+
+        results.append({
+            'ecosystem_type': eco_type,
+            'total_ha':       round(total_ha,     1),
+            'protected_ha':   round(protected_ha, 1),
+            'coverage_pct':   round(coverage_pct, 2),
+            'RI':             round(ri,            3),
+            'gap_ha':         round(gap_ha,        1),
+        })
+
+    df = pd.DataFrame(results).sort_values('coverage_pct').reset_index(drop=True)
+
+    if len(df) > 0:
+        logger.info(
+            "CLC-based RI: synthetic RI = %.3f  (%d / %d ecosystem types at target)",
+            df['RI'].mean(),
+            (df['RI'] >= 1.0).sum(),
+            len(df),
+        )
     return df
 
 
