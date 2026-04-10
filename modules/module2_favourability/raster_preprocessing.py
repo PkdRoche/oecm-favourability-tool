@@ -81,6 +81,111 @@ def load_raster(path: str) -> tuple[np.ndarray, dict]:
     return array, profile
 
 
+def load_raster_windowed(
+    path: str,
+    clip_geom,
+    geom_crs: str = 'EPSG:3035',
+    buffer_pixels: int = 10,
+) -> tuple[np.ndarray, dict]:
+    """Load only the portion of a GeoTIFF that overlaps a geometry's bounding box.
+
+    Instead of reading the entire file and then discarding pixels outside the
+    study area, this function:
+      1. Reprojects the geometry bounds into the raster's own CRS.
+      2. Computes the corresponding pixel window.
+      3. Reads only that window from disk.
+      4. Returns an (array, profile) with an adjusted transform.
+
+    For EU-wide rasters (e.g. CLC at 100 m, ~37 M pixels) clipped to a
+    country-sized NUTS territory (~300 k pixels), this reduces I/O and memory
+    by ~100×.
+
+    A ``buffer_pixels`` margin is added around the bounding box to ensure full
+    coverage after the subsequent reprojection step in ``align_rasters``.
+
+    Parameters
+    ----------
+    path : str
+        Path to the GeoTIFF file.
+    clip_geom : shapely geometry
+        Study area geometry used to derive the read window.
+    geom_crs : str
+        CRS of ``clip_geom``. Default ``'EPSG:3035'``.
+    buffer_pixels : int
+        Extra pixel margin added around the bounding box. Default 10.
+
+    Returns
+    -------
+    tuple[np.ndarray, dict]
+        (array, profile) covering at least the bounding box of ``clip_geom``.
+        Falls back to a full ``load_raster`` if windowed read fails.
+    """
+    if not Path(path).exists():
+        raise FileNotFoundError(f"Raster file not found: {path}")
+
+    try:
+        from pyproj import Transformer
+        from rasterio.windows import from_bounds as _win_from_bounds
+
+        with rasterio.open(path) as src:
+            raster_crs = src.crs
+            src_transform = src.transform
+
+            # ── Reproject geometry bounds into raster CRS ─────────────────
+            if str(raster_crs) != geom_crs:
+                _t = Transformer.from_crs(geom_crs, raster_crs, always_xy=True)
+                minx, miny, maxx, maxy = clip_geom.bounds
+                xs = [minx, maxx, minx, maxx]
+                ys = [miny, miny, maxy, maxy]
+                txs, tys = _t.transform(xs, ys)
+                win_bounds = (min(txs), min(tys), max(txs), max(tys))
+            else:
+                minx, miny, maxx, maxy = clip_geom.bounds
+                win_bounds = (minx, miny, maxx, maxy)
+
+            # ── Compute pixel window + buffer ────────────────────────────
+            win = _win_from_bounds(*win_bounds, transform=src_transform)
+            win = win.round_offsets().round_lengths()
+            # Add buffer and clamp to raster extent
+            col_off = max(0, int(win.col_off) - buffer_pixels)
+            row_off = max(0, int(win.row_off) - buffer_pixels)
+            col_end = min(src.width,  int(win.col_off + win.width)  + buffer_pixels)
+            row_end = min(src.height, int(win.row_off + win.height) + buffer_pixels)
+            buffered_win = rasterio.windows.Window(
+                col_off, row_off,
+                col_end - col_off,
+                row_end - row_off,
+            )
+
+            array   = src.read(1, window=buffered_win)
+            profile = dict(src.profile)
+            profile['width']     = buffered_win.width
+            profile['height']    = buffered_win.height
+            profile['transform'] = src.window_transform(buffered_win)
+
+        if array.size == 0:
+            raise ValueError("Windowed read produced empty array — falling back to full read")
+
+        if profile.get('crs') is None:
+            profile['crs'] = geom_crs
+
+        orig_h = rasterio.open(path).height
+        orig_w = rasterio.open(path).width
+        reduction = (orig_h * orig_w) / max(array.size, 1)
+        logger.info(
+            "Windowed read '%s': %dx%d pixels (%.0f× smaller than full raster)",
+            Path(path).name, array.shape[1], array.shape[0], reduction,
+        )
+        return array, profile
+
+    except Exception as exc:
+        logger.warning(
+            "Windowed read failed for '%s' (%s) — falling back to full load",
+            Path(path).name, exc,
+        )
+        return load_raster(path)
+
+
 def reproject_raster(
     array: np.ndarray,
     src_profile: dict,

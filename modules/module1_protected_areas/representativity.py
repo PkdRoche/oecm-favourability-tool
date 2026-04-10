@@ -273,13 +273,28 @@ def representativity_from_clc_raster(
 
     groups = ecosystem_groups if ecosystem_groups is not None else _CLC_ECOSYSTEM_GROUPS
 
-    # ── Load CLC raster ───────────────────────────────────────────────────────
+    # ── Load CLC raster — windowed read when study area is available ─────────
+    # EU-wide CLC at 100 m is ~37 M pixels. Reading only the study-area window
+    # reduces I/O and memory by ~100× for a country-sized territory.
+    def _load_clc():
+        if study_area_geom is not None and not study_area_geom.is_empty:
+            try:
+                from modules.module2_favourability.raster_preprocessing import (
+                    load_raster_windowed as _lw,
+                )
+                return _lw(clc_path, clip_geom=study_area_geom, geom_crs='EPSG:3035')
+            except Exception as _e:
+                logger.warning("Windowed CLC read failed (%s) — using full read", _e)
+        with rasterio.open(clc_path) as _s:
+            return _s.read(1), dict(_s.profile)
+
+    clc_array, _clc_prof = _load_clc()
+
     with rasterio.open(clc_path) as src:
-        clc_array = src.read(1)          # integer CLC codes
-        profile   = src.profile
-        transform = src.transform
-        nodata    = src.nodata or 0
-        crs       = src.crs
+        nodata = src.nodata or 0
+        crs    = _clc_prof.get('crs') or src.crs
+
+    transform = _clc_prof['transform']
 
     pixel_area_ha = abs(transform[0]) * abs(transform[4]) / 10_000.0
     h, w = clc_array.shape

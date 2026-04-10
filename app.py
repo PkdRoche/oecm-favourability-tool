@@ -170,13 +170,23 @@ with tab4:
         # -------------------------------------------------------
         @st.cache_data(show_spinner=False)
         def _load_and_align(paths_frozen, study_area_wkt, resolution, crs):
-            """Load and align all rasters. Cache key = paths + study area."""
+            """Load and align all rasters. Cache key = paths + study area.
+
+            When a study area is available, each raster is read via a windowed
+            read limited to the study area bounding box before alignment.
+            This avoids loading full EU-wide extents into memory.
+            """
             from shapely.wkt import loads as _wkt_loads
             from modules.module2_favourability import raster_preprocessing as _rp
             sa_geom = _wkt_loads(study_area_wkt) if study_area_wkt else None
             raster_dict = {}
             for name, path in paths_frozen:
-                arr, prof = _rp.load_raster(path)
+                if sa_geom is not None:
+                    arr, prof = _rp.load_raster_windowed(
+                        path, clip_geom=sa_geom, geom_crs=crs
+                    )
+                else:
+                    arr, prof = _rp.load_raster(path)
                 raster_dict[name] = (arr, prof)
             return _rp.align_rasters(
                 raster_dict,
