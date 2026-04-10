@@ -5,7 +5,6 @@ import configparser
 from pathlib import Path
 import logging
 import numpy as np
-import rasterio
 import subprocess
 import sys
 
@@ -132,7 +131,8 @@ def _validate_layer(criterion_key: str, file_path: str) -> None:
                     temp_path = tmp.name
 
                 # Write rescaled array to the temp file
-                with rasterio.open(temp_path, 'w', **profile) as dst:
+                import rasterio as _rasterio
+                with _rasterio.open(temp_path, 'w', **profile) as dst:
                     dst.write(rescaled_array, 1)
 
                 # Update path in session state
