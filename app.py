@@ -33,15 +33,22 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Large, bold tab labels — close to title font size
+# Tab styling: bold labels, 2 rows of 2 (flex-wrap)
 st.markdown(
     """
     <style>
-    .stTabs [data-baseweb="tab-list"] { gap: 12px; }
+    /* Wrap tabs onto 2 rows of 2 */
+    .stTabs [data-baseweb="tab-list"] {
+        flex-wrap: wrap;
+        gap: 8px 12px;
+    }
     .stTabs [data-baseweb="tab"] {
+        flex: 0 0 calc(50% - 8px);
+        box-sizing: border-box;
         font-size: 1.05rem;
         font-weight: 700;
-        padding: 12px 28px;
+        padding: 12px 20px;
+        justify-content: flex-start;
     }
     .stTabs [aria-selected="true"] {
         border-bottom: 3px solid #2E7D32;
@@ -68,48 +75,24 @@ from ui.tab_module2 import render_tab_module2
 # ===================================================================
 # Main title and description
 # ===================================================================
-st.title("OECM Territorial Favourability Analysis Tool")
+st.title("OECM Conservation Planning Tool")
 
 st.markdown(
     """
-    Decision-support tool for identifying territories candidate for
-    **Other Effective Area-based Conservation Measures (OECMs)**
-    as defined by CBD COP14 decision 14/8.
+    GIS decision-support tool for identifying and assessing candidate territories for
+    **Other Effective Area-based Conservation Measures (OECMs)**,
+    aligned with **KMGBF Target 3** (CBD COP15 decision 15/4) and the global **30×30** biodiversity commitment.
 
-    **Dual functionality:**
-    - **Module 1:** Diagnostic of existing protection network (WDPA) with gap analysis
-    - **Module 2:** Multi-criteria evaluation of OECM favourability
+    | Step | Module | Description |
+    |---|---|---|
+    | ① | **Data Upload** | Load WDPA protected areas, NUTS study-area boundaries, and MCE criterion rasters |
+    | ② | **Weight Calibration (AHP)** | Set criterion importance using Analytic Hierarchy Process pairwise comparisons |
+    | ③ | **Protection Network Diagnostic** | WDPA coverage statistics, KMGBF indicator, ecosystem representativity, gap analysis |
+    | ④ | **OECM Favourability Analysis** | Multi-criteria evaluation, candidate site delineation, sensitivity analysis, and GeoTIFF / DOCX export |
     """
 )
 
 st.markdown("---")
-
-# ===================================================================
-# Global CSS — larger, bolder tab labels
-# ===================================================================
-st.markdown(
-    """
-    <style>
-    /* Tab labels — close to h1/title size */
-    .stTabs [data-baseweb="tab"] {
-        font-size: 2.0rem;
-        font-weight: 700;
-        padding: 0.8rem 2.2rem;
-        letter-spacing: 0.01em;
-    }
-    .stTabs [data-baseweb="tab"] p {
-        font-size: 2.0rem !important;
-        font-weight: 700 !important;
-    }
-    /* Active tab underline accent */
-    .stTabs [aria-selected="true"] {
-        border-bottom: 4px solid #2e7d32;
-        color: #2e7d32;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
 # ===================================================================
 # Sidebar: render parameter panel and store in session state
