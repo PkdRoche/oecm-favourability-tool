@@ -20,6 +20,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# True when running locally on Windows (native file dialog available).
+# On Streamlit Cloud (Linux) we fall back to st.file_uploader.
+_IS_LOCAL = sys.platform == 'win32'
+
 
 def _native_browse(filetypes: list[tuple]) -> str:
     """Open a native Windows file dialog in a subprocess and return the selected path (or '')."""
@@ -38,6 +42,26 @@ def _native_browse(filetypes: list[tuple]) -> str:
     except Exception as e:
         logger.warning(f"Native file dialog failed: {e}")
         return ''
+
+
+def _save_upload_to_tmp(uploaded_file, suffix: str) -> str:
+    """Save a Streamlit UploadedFile to a temp file and return the path.
+
+    Uses a deduplication signature stored in session state so the file is
+    only written once per unique upload, not on every Streamlit rerun.
+    """
+    sig_key  = f'_upload_sig_{uploaded_file.name}_{uploaded_file.size}'
+    path_key = f'_upload_path_{uploaded_file.name}_{uploaded_file.size}'
+
+    if st.session_state.get(sig_key):
+        return st.session_state[path_key]
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp.write(uploaded_file.getvalue())
+    tmp.close()
+    st.session_state[sig_key]  = True
+    st.session_state[path_key] = tmp.name
+    return tmp.name
 
 
 def _validate_layer(criterion_key: str, file_path: str) -> None:
@@ -376,46 +400,66 @@ def render():
         "If left empty, the tool falls back to the Eurostat online service."
     )
 
-    col_nuts_browse, col_nuts_clear = st.columns(2)
-    with col_nuts_browse:
-        if st.button("Browse…", key='nuts_browse'):
-            chosen = _native_browse([
-                ("Vector layers", "*.gpkg *.geojson *.zip"),
-                ("All files", "*.*"),
-            ])
-            if chosen:
-                st.session_state['nuts_direct_path'] = chosen
-                st.session_state['nuts_file'] = chosen
+    if _IS_LOCAL:
+        col_nuts_browse, col_nuts_clear = st.columns(2)
+        with col_nuts_browse:
+            if st.button("Browse…", key='nuts_browse'):
+                chosen = _native_browse([
+                    ("Vector layers", "*.gpkg *.geojson *.zip"),
+                    ("All files", "*.*"),
+                ])
+                if chosen:
+                    st.session_state['nuts_direct_path'] = chosen
+                    st.session_state['nuts_file'] = chosen
+                    st.session_state.pop('nuts_gdf_cache', None)
+                    st.rerun()
+        with col_nuts_clear:
+            if st.button("✕ Clear", key='nuts_clear'):
+                st.session_state['nuts_direct_path'] = ''
+                st.session_state['nuts_file'] = None
                 st.session_state.pop('nuts_gdf_cache', None)
                 st.rerun()
-    with col_nuts_clear:
-        if st.button("✕ Clear", key='nuts_clear'):
-            st.session_state['nuts_direct_path'] = ''
-            st.session_state['nuts_file'] = None
-            st.session_state.pop('nuts_gdf_cache', None)
-            st.rerun()
 
-    with st.expander("Enter path manually"):
-        st.text_input(
-            "NUTS file path",
-            key='nuts_direct_path',
-            placeholder=r"C:\data\NUTS_RG_01M_2021_3035.zip",
-            help="Path to a local NUTS GeoPackage (.gpkg), GeoJSON, or ZIP archive containing a Shapefile. Must contain NUTS_ID, LEVL_CODE and NUTS_NAME columns in any CRS.",
+        with st.expander("Enter path manually"):
+            st.text_input(
+                "NUTS file path",
+                key='nuts_direct_path',
+                placeholder=r"C:\data\NUTS_RG_01M_2021_3035.zip",
+                help="Path to a local NUTS GeoPackage (.gpkg), GeoJSON, or ZIP archive.",
+                label_visibility="collapsed",
+            )
+
+        nuts_path_input = st.session_state.get('nuts_direct_path', '')
+        if nuts_path_input:
+            p = Path(nuts_path_input)
+            if p.exists():
+                st.session_state['nuts_file'] = str(p)
+                st.caption(f"✅ {p.name}")
+            else:
+                st.caption("⚠️ File not found — check the path in the expander above.")
+                st.session_state['nuts_file'] = None
+        else:
+            st.caption("No file selected.")
+            st.session_state['nuts_file'] = None
+
+    else:
+        # Cloud: use Streamlit file uploader
+        nuts_upload = st.file_uploader(
+            "Upload NUTS file",
+            type=['gpkg', 'geojson', 'zip'],
+            key='nuts_upload_widget',
+            help="GeoPackage, GeoJSON, or ZIP archive of a Shapefile. Must contain NUTS_ID, LEVL_CODE, NUTS_NAME columns.",
             label_visibility="collapsed",
         )
-
-    nuts_path_input = st.session_state.get('nuts_direct_path', '')
-    if nuts_path_input:
-        p = Path(nuts_path_input)
-        if p.exists():
-            st.session_state['nuts_file'] = str(p)
-            st.caption(f"✅ {p.name}")
+        if nuts_upload is not None:
+            suffix = Path(nuts_upload.name).suffix or '.gpkg'
+            tmp_path = _save_upload_to_tmp(nuts_upload, suffix)
+            st.session_state['nuts_file'] = tmp_path
+            st.session_state.pop('nuts_gdf_cache', None)
+            st.caption(f"✅ {nuts_upload.name}")
         else:
-            st.caption("⚠️ File not found — check the path in the expander above.")
+            st.caption("No file selected.")
             st.session_state['nuts_file'] = None
-    else:
-        st.caption("No file selected.")
-        st.session_state['nuts_file'] = None
 
     st.markdown("---")
 
@@ -429,50 +473,75 @@ def render():
         "Click **Browse…** or paste a path directly. Use **✕ Clear** to remove and reload a different file."
     )
 
-    col_wdpa_browse, col_wdpa_clear = st.columns(2)
-    with col_wdpa_browse:
-        if st.button("Browse…", key='wdpa_browse'):
-            chosen = _native_browse([
-                ("Vector layers", "*.gpkg *.geojson *.shp *.zip"),
-                ("All files", "*.*"),
-            ])
-            if chosen:
-                st.session_state['wdpa_direct_path'] = chosen
-                st.session_state.pop('pa_gdf', None)  # force reload
-    with col_wdpa_clear:
-        if st.button("✕ Clear", key='wdpa_clear'):
-            st.session_state['wdpa_direct_path'] = ''
+    if _IS_LOCAL:
+        col_wdpa_browse, col_wdpa_clear = st.columns(2)
+        with col_wdpa_browse:
+            if st.button("Browse…", key='wdpa_browse'):
+                chosen = _native_browse([
+                    ("Vector layers", "*.gpkg *.geojson *.shp *.zip"),
+                    ("All files", "*.*"),
+                ])
+                if chosen:
+                    st.session_state['wdpa_direct_path'] = chosen
+                    st.session_state.pop('pa_gdf', None)  # force reload
+        with col_wdpa_clear:
+            if st.button("✕ Clear", key='wdpa_clear'):
+                st.session_state['wdpa_direct_path'] = ''
+                st.session_state['wdpa_file'] = None
+                st.session_state.pop('_original_wdpa_path', None)
+                st.session_state.pop('pa_gdf', None)
+
+        with st.expander("Enter path manually"):
+            st.text_input(
+                "WDPA file path",
+                key='wdpa_direct_path',
+                placeholder=r"C:\data\wdpa.gpkg",
+                help="Full path to the WDPA GeoPackage (.gpkg), GeoJSON, Shapefile, or ZIP on disk.",
+                label_visibility="collapsed",
+            )
+
+        prev_wdpa = st.session_state.get('wdpa_file')
+        wdpa_path_input = st.session_state.get('wdpa_direct_path', '')
+        if wdpa_path_input:
+            p = Path(wdpa_path_input)
+            if p.exists():
+                if prev_wdpa != str(p):
+                    st.session_state.pop('pa_gdf', None)
+                st.session_state['wdpa_file'] = str(p)
+                st.session_state['_original_wdpa_path'] = str(p)
+                st.caption(f"✅ {p.name}")
+            else:
+                st.caption("⚠️ File not found — check the path in the expander above.")
+                st.session_state['wdpa_file'] = None
+                st.session_state.pop('_original_wdpa_path', None)
+        else:
+            st.caption("No file selected.")
             st.session_state['wdpa_file'] = None
             st.session_state.pop('_original_wdpa_path', None)
-            st.session_state.pop('pa_gdf', None)
 
-    with st.expander("Enter path manually"):
-        st.text_input(
-            "WDPA file path",
-            key='wdpa_direct_path',
-            placeholder=r"C:\data\wdpa.gpkg",
-            help="Full path to the WDPA GeoPackage (.gpkg), GeoJSON, Shapefile, or ZIP on disk.",
+    else:
+        # Cloud: use Streamlit file uploader
+        st.caption("Upload a GeoPackage (.gpkg), GeoJSON, or ZIP of a Shapefile. "
+                   "For large WDPA exports, pre-clip to your study area before uploading.")
+        wdpa_upload = st.file_uploader(
+            "Upload WDPA file",
+            type=['gpkg', 'geojson', 'shp', 'zip'],
+            key='wdpa_upload_widget',
             label_visibility="collapsed",
         )
-
-    prev_wdpa = st.session_state.get('wdpa_file')
-    wdpa_path_input = st.session_state.get('wdpa_direct_path', '')
-    if wdpa_path_input:
-        p = Path(wdpa_path_input)
-        if p.exists():
-            if prev_wdpa != str(p):
-                st.session_state.pop('pa_gdf', None)  # path changed → force reload
-            st.session_state['wdpa_file'] = str(p)
-            st.session_state['_original_wdpa_path'] = str(p)
-            st.caption(f"✅ {p.name}")
+        prev_wdpa = st.session_state.get('wdpa_file')
+        if wdpa_upload is not None:
+            suffix = Path(wdpa_upload.name).suffix or '.gpkg'
+            tmp_path = _save_upload_to_tmp(wdpa_upload, suffix)
+            if prev_wdpa != tmp_path:
+                st.session_state.pop('pa_gdf', None)
+            st.session_state['wdpa_file'] = tmp_path
+            st.session_state['_original_wdpa_path'] = tmp_path
+            st.caption(f"✅ {wdpa_upload.name}")
         else:
-            st.caption("⚠️ File not found — check the path in the expander above.")
+            st.caption("No file selected.")
             st.session_state['wdpa_file'] = None
             st.session_state.pop('_original_wdpa_path', None)
-    else:
-        st.caption("No file selected.")
-        st.session_state['wdpa_file'] = None
-        st.session_state.pop('_original_wdpa_path', None)
 
     def _clear_pa_gdf():
         """Reset cached PA GeoDataFrame when marine filter changes."""
@@ -495,10 +564,16 @@ def render():
     # Criterion rasters (for Module 2)
     # ===================================================================
     st.subheader("Multi-Criteria Evaluation Layers")
-    st.caption(
-        "Click **Browse…** or paste a path for each GeoTIFF (EPSG:3035). "
-        "Paths are saved as-is in the .ini project file — no temporary copies."
-    )
+    if _IS_LOCAL:
+        st.caption(
+            "Click **Browse…** or paste a path for each GeoTIFF (EPSG:3035). "
+            "Paths are saved as-is in the .ini project file — no temporary copies."
+        )
+    else:
+        st.caption(
+            "Upload each GeoTIFF (EPSG:3035). "
+            "Large files (> 200 MB) should be pre-clipped to the study area before uploading."
+        )
 
     # Initialize session state dicts
     if 'criterion_raster_paths' not in st.session_state:
@@ -510,62 +585,86 @@ def render():
     if '_original_raster_paths' not in st.session_state:
         st.session_state['_original_raster_paths'] = {}
 
-    # Helper: layer name as heading → Browse/Clear → filename status → path in expander
+    def _clear_raster(criterion_key, widget_key):
+        """Remove a raster from all session state dicts."""
+        st.session_state[widget_key] = ''
+        st.session_state['criterion_raster_paths'].pop(criterion_key, None)
+        st.session_state['_original_raster_paths'].pop(criterion_key, None)
+        st.session_state['validation_reports'].pop(criterion_key, None)
+        st.session_state.pop(f"{criterion_key}_validated_path", None)
+
+    def _register_raster(criterion_key, file_path):
+        """Store a valid raster path and trigger validation if the path changed."""
+        prev = st.session_state['criterion_raster_paths'].get(criterion_key)
+        st.session_state['criterion_raster_paths'][criterion_key] = file_path
+        st.session_state['_original_raster_paths'][criterion_key] = file_path
+        if prev != file_path:
+            _validate_layer(criterion_key, file_path)
+
+    # Helper: layer name as heading → file input (Browse on local, uploader on Cloud)
     def _layer_uploader(criterion_key, label, help_text):
         widget_key = f'{criterion_key}_direct_path'
 
         # ① Layer name as a prominent heading above the controls
         st.markdown(f"**{label}**")
 
-        # ② Browse / Clear row (no path column — keeps it compact)
-        col_browse, col_clear = st.columns(2)
-        with col_browse:
-            if st.button("Browse…", key=f'{criterion_key}_browse'):
-                chosen = _native_browse([
-                    ("GeoTIFF", "*.tif *.tiff"),
-                    ("All files", "*.*"),
-                ])
-                if chosen:
-                    st.session_state[widget_key] = chosen
-        with col_clear:
-            if st.button("✕ Clear", key=f'{criterion_key}_clear'):
-                st.session_state[widget_key] = ''
+        if _IS_LOCAL:
+            # ── Local Windows: native Browse button + collapsible path input ──
+            col_browse, col_clear = st.columns(2)
+            with col_browse:
+                if st.button("Browse…", key=f'{criterion_key}_browse'):
+                    chosen = _native_browse([
+                        ("GeoTIFF", "*.tif *.tiff"),
+                        ("All files", "*.*"),
+                    ])
+                    if chosen:
+                        st.session_state[widget_key] = chosen
+            with col_clear:
+                if st.button("✕ Clear", key=f'{criterion_key}_clear'):
+                    _clear_raster(criterion_key, widget_key)
+
+            with st.expander("Enter path manually"):
+                st.text_input(
+                    label,
+                    key=widget_key,
+                    placeholder=r"C:\data\file.tif",
+                    help=help_text,
+                    label_visibility="collapsed",
+                )
+
+            current_path = st.session_state.get(widget_key, '')
+            if current_path:
+                p = Path(current_path)
+                if p.exists():
+                    _register_raster(criterion_key, str(p))
+                    st.caption(f"✅ {p.name}")
+                else:
+                    st.caption("⚠️ File not found — check the path in the expander above.")
+                    _clear_raster(criterion_key, widget_key)
+            else:
+                st.caption("No file selected.")
                 st.session_state['criterion_raster_paths'].pop(criterion_key, None)
                 st.session_state['_original_raster_paths'].pop(criterion_key, None)
                 st.session_state['validation_reports'].pop(criterion_key, None)
-                st.session_state.pop(f"{criterion_key}_validated_path", None)
 
-        # ③ Path input hidden inside a collapsed expander — available when needed
-        with st.expander("Enter path manually"):
-            st.text_input(
+        else:
+            # ── Cloud: Streamlit file uploader ──
+            uploaded = st.file_uploader(
                 label,
-                key=widget_key,
-                placeholder=r"C:\data\file.tif",
+                type=['tif', 'tiff'],
+                key=f'{criterion_key}_upload_widget',
                 help=help_text,
                 label_visibility="collapsed",
             )
-
-        # ④ Status line — shows filename only (not full path)
-        current_path = st.session_state.get(widget_key, '')
-        if current_path:
-            p = Path(current_path)
-            if p.exists():
-                prev = st.session_state['criterion_raster_paths'].get(criterion_key)
-                st.session_state['criterion_raster_paths'][criterion_key] = str(p)
-                st.session_state['_original_raster_paths'][criterion_key] = str(p)
-                if prev != str(p):
-                    _validate_layer(criterion_key, str(p))
-                st.caption(f"✅ {p.name}")
+            if uploaded is not None:
+                tmp_path = _save_upload_to_tmp(uploaded, '.tif')
+                _register_raster(criterion_key, tmp_path)
+                st.caption(f"✅ {uploaded.name}")
             else:
-                st.caption("⚠️ File not found — check the path in the expander above.")
+                st.caption("No file selected.")
                 st.session_state['criterion_raster_paths'].pop(criterion_key, None)
                 st.session_state['_original_raster_paths'].pop(criterion_key, None)
                 st.session_state['validation_reports'].pop(criterion_key, None)
-        else:
-            st.caption("No file selected.")
-            st.session_state['criterion_raster_paths'].pop(criterion_key, None)
-            st.session_state['_original_raster_paths'].pop(criterion_key, None)
-            st.session_state['validation_reports'].pop(criterion_key, None)
 
     col_left, col_right = st.columns(2)
 
