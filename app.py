@@ -45,10 +45,14 @@ st.markdown(
     .stTabs [data-baseweb="tab"] {
         flex: 0 0 calc(50% - 8px);
         box-sizing: border-box;
-        font-size: 1.05rem;
+        font-size: 2.1rem;
         font-weight: 700;
-        padding: 12px 20px;
+        padding: 16px 24px;
         justify-content: flex-start;
+    }
+    .stTabs [data-baseweb="tab"] p {
+        font-size: 2.1rem !important;
+        font-weight: 700 !important;
     }
     .stTabs [aria-selected="true"] {
         border-bottom: 3px solid #2E7D32;
