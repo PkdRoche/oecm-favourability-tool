@@ -376,7 +376,7 @@ def render():
         "If left empty, the tool falls back to the Eurostat online service."
     )
 
-    col_nuts_browse, col_nuts_clear = st.columns([1, 1])
+    col_nuts_browse, col_nuts_clear = st.columns(2)
     with col_nuts_browse:
         if st.button("Browse…", key='nuts_browse'):
             chosen = _native_browse([
@@ -395,22 +395,26 @@ def render():
             st.session_state.pop('nuts_gdf_cache', None)
             st.rerun()
 
-    nuts_path_input = st.text_input(
-        "NUTS file path",
-        key='nuts_direct_path',
-        placeholder=r"C:\data\NUTS_RG_01M_2021_3035.zip",
-        help="Path to a local NUTS GeoPackage (.gpkg), GeoJSON, or ZIP archive containing a Shapefile. Must contain NUTS_ID, LEVL_CODE and NUTS_NAME columns in any CRS.",
-    )
+    with st.expander("Enter path manually"):
+        st.text_input(
+            "NUTS file path",
+            key='nuts_direct_path',
+            placeholder=r"C:\data\NUTS_RG_01M_2021_3035.zip",
+            help="Path to a local NUTS GeoPackage (.gpkg), GeoJSON, or ZIP archive containing a Shapefile. Must contain NUTS_ID, LEVL_CODE and NUTS_NAME columns in any CRS.",
+            label_visibility="collapsed",
+        )
 
+    nuts_path_input = st.session_state.get('nuts_direct_path', '')
     if nuts_path_input:
         p = Path(nuts_path_input)
         if p.exists():
             st.session_state['nuts_file'] = str(p)
             st.caption(f"✅ {p.name}")
         else:
-            st.warning(f"File not found: {nuts_path_input}")
+            st.caption("⚠️ File not found — check the path in the expander above.")
             st.session_state['nuts_file'] = None
     else:
+        st.caption("No file selected.")
         st.session_state['nuts_file'] = None
 
     st.markdown("---")
@@ -425,7 +429,7 @@ def render():
         "Click **Browse…** or paste a path directly. Use **✕ Clear** to remove and reload a different file."
     )
 
-    col_wdpa_browse, col_wdpa_clear = st.columns([1, 1])
+    col_wdpa_browse, col_wdpa_clear = st.columns(2)
     with col_wdpa_browse:
         if st.button("Browse…", key='wdpa_browse'):
             chosen = _native_browse([
@@ -442,14 +446,17 @@ def render():
             st.session_state.pop('_original_wdpa_path', None)
             st.session_state.pop('pa_gdf', None)
 
-    prev_wdpa = st.session_state.get('wdpa_file')
-    wdpa_path_input = st.text_input(
-        "WDPA file path",
-        key='wdpa_direct_path',
-        placeholder=r"C:\data\wdpa.gpkg",
-        help="Full path to the WDPA GeoPackage (.gpkg), GeoJSON, Shapefile, or ZIP on disk.",
-    )
+    with st.expander("Enter path manually"):
+        st.text_input(
+            "WDPA file path",
+            key='wdpa_direct_path',
+            placeholder=r"C:\data\wdpa.gpkg",
+            help="Full path to the WDPA GeoPackage (.gpkg), GeoJSON, Shapefile, or ZIP on disk.",
+            label_visibility="collapsed",
+        )
 
+    prev_wdpa = st.session_state.get('wdpa_file')
+    wdpa_path_input = st.session_state.get('wdpa_direct_path', '')
     if wdpa_path_input:
         p = Path(wdpa_path_input)
         if p.exists():
@@ -459,10 +466,11 @@ def render():
             st.session_state['_original_wdpa_path'] = str(p)
             st.caption(f"✅ {p.name}")
         else:
-            st.warning(f"File not found: {wdpa_path_input}")
+            st.caption("⚠️ File not found — check the path in the expander above.")
             st.session_state['wdpa_file'] = None
             st.session_state.pop('_original_wdpa_path', None)
     else:
+        st.caption("No file selected.")
         st.session_state['wdpa_file'] = None
         st.session_state.pop('_original_wdpa_path', None)
 
@@ -502,11 +510,15 @@ def render():
     if '_original_raster_paths' not in st.session_state:
         st.session_state['_original_raster_paths'] = {}
 
-    # Helper: Browse + Clear buttons with editable path input for each raster layer
+    # Helper: layer name as heading → Browse/Clear → filename status → path in expander
     def _layer_uploader(criterion_key, label, help_text):
         widget_key = f'{criterion_key}_direct_path'
 
-        col_browse, col_clear, col_name = st.columns([1, 1, 4])
+        # ① Layer name as a prominent heading above the controls
+        st.markdown(f"**{label}**")
+
+        # ② Browse / Clear row (no path column — keeps it compact)
+        col_browse, col_clear = st.columns(2)
         with col_browse:
             if st.button("Browse…", key=f'{criterion_key}_browse'):
                 chosen = _native_browse([
@@ -523,16 +535,20 @@ def render():
                 st.session_state['validation_reports'].pop(criterion_key, None)
                 st.session_state.pop(f"{criterion_key}_validated_path", None)
 
-        with col_name:
-            path_input = st.text_input(
+        # ③ Path input hidden inside a collapsed expander — available when needed
+        with st.expander("Enter path manually"):
+            st.text_input(
                 label,
                 key=widget_key,
                 placeholder=r"C:\data\file.tif",
                 help=help_text,
+                label_visibility="collapsed",
             )
 
-        if path_input:
-            p = Path(path_input)
+        # ④ Status line — shows filename only (not full path)
+        current_path = st.session_state.get(widget_key, '')
+        if current_path:
+            p = Path(current_path)
             if p.exists():
                 prev = st.session_state['criterion_raster_paths'].get(criterion_key)
                 st.session_state['criterion_raster_paths'][criterion_key] = str(p)
@@ -541,11 +557,12 @@ def render():
                     _validate_layer(criterion_key, str(p))
                 st.caption(f"✅ {p.name}")
             else:
-                st.warning(f"File not found: {path_input}")
+                st.caption("⚠️ File not found — check the path in the expander above.")
                 st.session_state['criterion_raster_paths'].pop(criterion_key, None)
                 st.session_state['_original_raster_paths'].pop(criterion_key, None)
                 st.session_state['validation_reports'].pop(criterion_key, None)
         else:
+            st.caption("No file selected.")
             st.session_state['criterion_raster_paths'].pop(criterion_key, None)
             st.session_state['_original_raster_paths'].pop(criterion_key, None)
             st.session_state['validation_reports'].pop(criterion_key, None)
