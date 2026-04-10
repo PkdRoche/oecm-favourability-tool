@@ -383,7 +383,9 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
         )
 
         clc_path = st.session_state.get('criterion_raster_paths', {}).get('landuse')
-        _ri_cache_key = (clc_path, id(pa_gdf))
+        # Include territory_geom identity in key so stale results (computed
+        # without a study-area mask) are not served after the geom is available.
+        _ri_cache_key = (clc_path, id(pa_gdf), id(territory_geom))
         _cache_valid  = (st.session_state.get('_ri_cache_key') == _ri_cache_key
                          and 'ri_df' in st.session_state)
 
@@ -405,7 +407,7 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                             clc_path=clc_path,
                             pa_gdf=pa_gdf,
                             target_threshold=0.30,
-                            study_area_geom=st.session_state.get('study_area_geometry'),
+                            study_area_geom=territory_geom,
                         )
                     st.session_state['ri_df']         = ri_df
                     st.session_state['ri_class_df']   = class_df
