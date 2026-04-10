@@ -231,15 +231,18 @@ def representativity_from_clc_raster(
     pa_gdf: gpd.GeoDataFrame,
     target_threshold: float = 0.30,
     ecosystem_groups: Optional[dict] = None,
+    study_area_geom=None,
 ) -> pd.DataFrame:
     """
     Compute ecosystem representativity directly from the CLC raster.
 
     Avoids expensive vector overlay by working entirely in raster space:
     1. Load CLC raster (integer CLC codes 111–523).
-    2. Rasterize PA polygons onto the same grid.
-    3. For each ecosystem group, count total pixels and PA-covered pixels.
-    4. Convert pixel counts to hectares and compute RI.
+    2. Rasterize the study area geometry to restrict analysis to the territory.
+    3. Rasterize PA polygons onto the same grid.
+    4. For each ecosystem group, count total pixels and PA-covered pixels
+       **within the study area only**.
+    5. Convert pixel counts to hectares and compute RI.
 
     Parameters
     ----------
@@ -252,6 +255,11 @@ def representativity_from_clc_raster(
     ecosystem_groups : dict, optional
         Mapping of ecosystem-type label → set of CLC integer codes.
         Defaults to the built-in ``_CLC_ECOSYSTEM_GROUPS`` (6 categories).
+    study_area_geom : shapely geometry, optional
+        Territory polygon used to restrict pixel counting to the study area.
+        **Without this, totals are computed over the entire CLC raster extent
+        (all of Europe), producing near-zero coverage percentages.**
+        Pass ``st.session_state.get('study_area_geometry')`` from the UI.
 
     Returns
     -------
@@ -276,12 +284,45 @@ def representativity_from_clc_raster(
     pixel_area_ha = abs(transform[0]) * abs(transform[4]) / 10_000.0
     h, w = clc_array.shape
 
+    # ── Rasterize study area → territory mask ────────────────────────────────
+    # CRITICAL: without this mask, total_px counts the entire CLC extent
+    # (all of Europe), making coverage appear near 0% for any local territory.
+    if study_area_geom is not None and not study_area_geom.is_empty:
+        try:
+            import geopandas as _gpd
+            # Reproject study area to raster CRS
+            sa_gdf   = _gpd.GeoDataFrame(geometry=[study_area_geom], crs='EPSG:3035')
+            sa_repr  = sa_gdf.to_crs(crs).geometry.iloc[0]
+            sa_union = unary_union(
+                [g for g in ([sa_repr] if sa_repr.geom_type != 'GeometryCollection'
+                             else sa_repr.geoms)
+                 if g is not None and not g.is_empty]
+            )
+            territory_mask = _rasterize(
+                shapes=[(sa_union, 1)],
+                out_shape=(h, w),
+                transform=transform,
+                fill=0,
+                dtype='uint8',
+            ).astype(bool)
+            logger.info("Study area mask applied: %d territory pixels", territory_mask.sum())
+        except Exception as _e:
+            logger.warning("Could not rasterize study area — using full raster extent: %s", _e)
+            territory_mask = np.ones((h, w), dtype=bool)
+    else:
+        logger.warning(
+            "No study_area_geom provided to representativity_from_clc_raster. "
+            "Totals will cover the full CLC raster extent (likely all of Europe). "
+            "Pass study_area_geom=st.session_state.get('study_area_geometry')."
+        )
+        territory_mask = np.ones((h, w), dtype=bool)
+
     # ── Rasterize PA polygons onto the CLC grid ───────────────────────────────
     # Dissolve to a single (Multi)Polygon before rasterizing — much faster than
     # passing thousands of individual polygon shapes to rasterio.features.rasterize.
     if len(pa_gdf) > 0:
-        pa_repr    = pa_gdf.to_crs(crs)
-        dissolved  = unary_union(
+        pa_repr   = pa_gdf.to_crs(crs)
+        dissolved = unary_union(
             [g for g in pa_repr.geometry if g is not None and not g.is_empty]
         )
         if dissolved is not None and not dissolved.is_empty:
@@ -297,9 +338,34 @@ def representativity_from_clc_raster(
     else:
         pa_mask = np.zeros((h, w), dtype=bool)
 
-    # ── Pixel-count RI per ecosystem group ───────────────────────────────────
-    valid = (clc_array != nodata) & (clc_array != 0)
-    results = []
+    # ── Per-protection-class PA masks (for breakdown table) ──────────────────
+    _PA_CLASSES = ['strict_core', 'regulatory', 'contractual', 'unassigned']
+    class_masks: dict[str, np.ndarray] = {}
+    if 'protection_class' in pa_gdf.columns:
+        for _cls in _PA_CLASSES:
+            _sub = pa_gdf[pa_gdf['protection_class'] == _cls]
+            if len(_sub) > 0:
+                _sub_repr = _sub.to_crs(crs)
+                _sub_diss = unary_union(
+                    [g for g in _sub_repr.geometry if g is not None and not g.is_empty]
+                )
+                if _sub_diss is not None and not _sub_diss.is_empty:
+                    class_masks[_cls] = _rasterize(
+                        shapes=[(_sub_diss, 1)],
+                        out_shape=(h, w),
+                        transform=transform,
+                        fill=0,
+                        dtype='uint8',
+                    ).astype(bool)
+                else:
+                    class_masks[_cls] = np.zeros((h, w), dtype=bool)
+            else:
+                class_masks[_cls] = np.zeros((h, w), dtype=bool)
+
+    # ── Pixel-count RI per ecosystem group (within territory only) ────────────
+    valid = (clc_array != nodata) & (clc_array != 0) & territory_mask
+    results       = []
+    class_results = []
 
     for eco_type, code_set in groups.items():
         codes    = np.array(list(code_set), dtype=clc_array.dtype)
@@ -327,7 +393,25 @@ def representativity_from_clc_raster(
             'gap_ha':         round(gap_ha,        1),
         })
 
+        # Per-class breakdown row
+        if class_masks:
+            _row: dict = {'ecosystem_type': eco_type, 'total_ha': round(total_ha, 1)}
+            for _cls in _PA_CLASSES:
+                _m = class_masks.get(_cls)
+                if _m is not None:
+                    _cls_ha = int((eco_mask & _m).sum()) * pixel_area_ha
+                else:
+                    _cls_ha = 0.0
+                _row[_cls] = round(_cls_ha / total_ha * 100.0, 1)
+            class_results.append(_row)
+
     df = pd.DataFrame(results).sort_values('coverage_pct').reset_index(drop=True)
+    class_df = (
+        pd.DataFrame(class_results)
+        .sort_values('total_ha', ascending=False)
+        .reset_index(drop=True)
+        if class_results else pd.DataFrame()
+    )
 
     if len(df) > 0:
         logger.info(
@@ -336,7 +420,7 @@ def representativity_from_clc_raster(
             (df['RI'] >= 1.0).sum(),
             len(df),
         )
-    return df
+    return df, class_df
 
 
 def propose_group_a_weights(

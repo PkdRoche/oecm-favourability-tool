@@ -401,12 +401,14 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                         from modules.module1_protected_areas.representativity import (
                             representativity_from_clc_raster
                         )
-                        ri_df = representativity_from_clc_raster(
+                        ri_df, class_df = representativity_from_clc_raster(
                             clc_path=clc_path,
                             pa_gdf=pa_gdf,
                             target_threshold=0.30,
+                            study_area_geom=st.session_state.get('study_area_geometry'),
                         )
                     st.session_state['ri_df']         = ri_df
+                    st.session_state['ri_class_df']   = class_df
                     st.session_state['_ri_cache_key'] = _ri_cache_key
                     _cache_valid = True
                 except Exception as _e:
@@ -430,30 +432,12 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                 f"{_ri_label} — {(ri_df['RI'] >= 1.0).sum()}/{len(ri_df)} types at 30% target",
                 help=(
                     "Mean Representativity Index across ecosystem types. "
-                    "RI = min(coverage / 30%, 1.0).  "
-                    "1.0 = all types meet the KMGBF 30% target, 0.0 = none protected."
+                    "RI = min(PA coverage / 30%, 1.0). "
+                    "1.0 = meets the KMGBF 30% target, 0.0 = no protection."
                 )
             )
 
-            # Horizontal bar chart
-            import matplotlib.pyplot as _plt
-            _fig, _ax = _plt.subplots(figsize=(5, max(2.5, len(ri_df) * 0.55)))
-            _sorted = ri_df.sort_values('coverage_pct')
-            _colours = ['#1D9E75' if v >= 30.0 else '#F6A623'
-                        for v in _sorted['coverage_pct']]
-            _ax.barh(_sorted['ecosystem_type'], _sorted['coverage_pct'],
-                     color=_colours, alpha=0.85)
-            _ax.axvline(30, color='red', linewidth=1.2, linestyle='--',
-                        label='30% KMGBF target')
-            _ax.set_xlabel('PA coverage (%)')
-            _ax.set_xlim(0, max(100, _sorted['coverage_pct'].max() * 1.05))
-            _ax.legend(fontsize=8)
-            _fig.tight_layout()
-            st.pyplot(_fig, use_container_width=True)
-            _plt.close(_fig)
-
-            st.caption("Green = at or above 30% target | Amber = below target")
-
+            # ── Coverage RI table ─────────────────────────────────────────────
             display_ri = ri_df[['ecosystem_type', 'total_ha', 'protected_ha',
                                  'coverage_pct', 'RI', 'gap_ha']].copy()
             display_ri['total_ha']     = display_ri['total_ha'].apply(lambda x: f"{x:,.0f}")
@@ -469,11 +453,45 @@ def render_tab_module1(pa_gdf=None, territory_geom=None, ecosystem_layer=None):
                     'ecosystem_type': 'Ecosystem Type',
                     'total_ha':       st.column_config.TextColumn('Total (ha)'),
                     'protected_ha':   st.column_config.TextColumn('Protected (ha)'),
-                    'coverage_pct':   st.column_config.TextColumn('Coverage'),
+                    'coverage_pct':   st.column_config.TextColumn('PA Coverage'),
                     'RI':             st.column_config.TextColumn('RI'),
                     'gap_ha':         st.column_config.TextColumn('Gap to 30% (ha)'),
                 }
             )
+
+            # ── Ecosystem share by protection class ───────────────────────────
+            class_df = st.session_state.get('ri_class_df')
+            if class_df is not None and len(class_df) > 0:
+                st.markdown("**Ecosystem coverage by protection class (% of ecosystem area)**")
+                st.caption(
+                    "strict_core = IUCN Ia/Ib/II · "
+                    "regulatory = IUCN III–VI · "
+                    "contractual = OECM/contractual · "
+                    "unassigned = no IUCN category"
+                )
+                _cls_cols = [c for c in
+                             ['strict_core', 'regulatory', 'contractual', 'unassigned']
+                             if c in class_df.columns]
+                display_cls = class_df[['ecosystem_type', 'total_ha'] + _cls_cols].copy()
+                display_cls['total_ha'] = display_cls['total_ha'].apply(lambda x: f"{x:,.0f}")
+                for _c in _cls_cols:
+                    display_cls[_c] = display_cls[_c].apply(lambda x: f"{x:.1f}%")
+                _col_labels = {
+                    'ecosystem_type': 'Ecosystem Type',
+                    'total_ha':       st.column_config.TextColumn('Total (ha)'),
+                    'strict_core':    st.column_config.TextColumn('Strict core\n(Ia/Ib/II)'),
+                    'regulatory':     st.column_config.TextColumn('Regulatory\n(III–VI)'),
+                    'contractual':    st.column_config.TextColumn('Contractual\n(OECM)'),
+                    'unassigned':     st.column_config.TextColumn('Unassigned'),
+                }
+                st.dataframe(
+                    display_cls,
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={k: v for k, v in _col_labels.items()
+                                   if k in display_cls.columns},
+                )
+
         elif clc_path and not _cache_valid:
             st.caption("Click **Compute Ecosystem RI** above to run the analysis.")
 
